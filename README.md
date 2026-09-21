@@ -59,9 +59,12 @@ Points d’entrée initiaux :
 - `GET http://127.0.0.1:8080/api/v1/health`
 - `GET http://127.0.0.1:8080/api/v1/health/live`
 - `GET http://127.0.0.1:8080/api/v1/health/ready`
+- `GET http://127.0.0.1:8080/api/v1/session` — route protégée, fermée par défaut
 - `GET http://127.0.0.1:8080/api/openapi.json`
 
 Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
+
+Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Aucun fournisseur d’authentification réel n’est encore branché : `/api/v1/session` répond donc `401` tant qu’un composant vérifié n’a pas injecté le principal.
 
 ## Démarrer le client Windows
 
@@ -89,5 +92,6 @@ Le travail est organisé dans les [milestones GitHub](https://github.com/lolo158
 
 - [Vue d’ensemble de l’architecture](docs/architecture/overview.md)
 - [ADR-0001 — Socle technologique](docs/architecture/ADR-0001-technology-stack.md)
+- [ADR-0002 — Frontière d’authentification et d’autorisation](docs/architecture/ADR-0002-authentication-boundary.md)
 - [Journal des modifications](CHANGELOG.md)
 - [Guide de contribution](CONTRIBUTING.md)

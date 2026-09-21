@@ -19,6 +19,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Endpoints distincts d’information, de vie et de disponibilité du service.
 - Format JSON normalisé pour les routes introuvables.
 - Génération et propagation d’un identifiant UUID `x-request-id` pour chaque requête.
+- Modèle d’identité et catalogue initial de permissions effectives.
+- Endpoint protégé `GET /api/v1/session`, fermé par défaut en l’absence d’identité vérifiée.
+- ADR consacré à la frontière d’authentification et d’autorisation.
 
 ### Sécurité
 
@@ -26,3 +29,4 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Exclusion des fichiers de configuration locale et secrets du suivi Git.
 - Aucun accès à MariaDB, stockage documentaire ou service distant dans le socle initial.
 - Validation des identifiants de requête fournis par les clients et ajout des en-têtes `nosniff` et `no-referrer`.
+- Séparation explicite des permissions financières et refus par défaut des accès protégés.

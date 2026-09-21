@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use axum::{
+    Extension,
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
@@ -88,6 +91,59 @@ async fn unknown_route_returns_problem_details() {
     assert_eq!(payload["status"], 404);
     assert_eq!(payload["code"], "route_not_found");
     assert_eq!(payload["instance"], "/api/v1/unknown");
+}
+
+#[tokio::test]
+async fn session_endpoint_denies_anonymous_requests() {
+    let response = collectionops_backend::app()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .body(Body::empty())
+                .expect("request must be valid"),
+        )
+        .await
+        .expect("router must answer");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/problem+json"
+        ))
+    );
+    let payload = response_json(response).await;
+    assert_eq!(payload["code"], "authentication_required");
+}
+
+#[tokio::test]
+async fn session_endpoint_returns_injected_principal() {
+    let subject = Uuid::now_v7();
+    let principal = collectionops_backend::Principal {
+        subject,
+        display_name: "Collectionneur".to_owned(),
+        roles: BTreeSet::from(["collector".to_owned()]),
+        permissions: BTreeSet::from([
+            collectionops_backend::Permission::CollectionsRead,
+            collectionops_backend::Permission::CollectionsWrite,
+        ]),
+    };
+    let response = collectionops_backend::app()
+        .layer(Extension(principal))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .body(Body::empty())
+                .expect("request must be valid"),
+        )
+        .await
+        .expect("router must answer");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+    assert_eq!(payload["principal"]["subject"], subject.to_string());
+    assert_eq!(payload["principal"]["display_name"], "Collectionneur");
+    assert_eq!(payload["principal"]["permissions"][0], "collections_read");
 }
 
 #[tokio::test]

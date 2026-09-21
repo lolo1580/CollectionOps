@@ -14,8 +14,8 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "5", features = ["axum_extras"] }
-uuid = { version = "1", features = ["v7"] }
+utoipa = { version = "5", features = ["axum_extras", "uuid"] }
+uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

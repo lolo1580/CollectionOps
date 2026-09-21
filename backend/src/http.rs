@@ -1,16 +1,18 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
     extract::Request,
     http::{HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
+
+use crate::security::Principal;
 
 pub const API_PREFIX: &str = "/api/v1";
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -38,6 +40,60 @@ pub struct ProblemDetails {
     pub detail: String,
     pub instance: String,
     pub code: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SessionResponse {
+    pub principal: Principal,
+}
+
+struct ApiError {
+    status: StatusCode,
+    problem: ProblemDetails,
+}
+
+impl ApiError {
+    fn authentication_required(instance: &str) -> Self {
+        let status = StatusCode::UNAUTHORIZED;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Authentification requise",
+                status: status.as_u16(),
+                detail: "Une session valide est nécessaire pour accéder à cette ressource."
+                    .to_owned(),
+                instance: instance.to_owned(),
+                code: "authentication_required",
+            },
+        }
+    }
+
+    fn route_not_found(instance: &str) -> Self {
+        let status = StatusCode::NOT_FOUND;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Ressource introuvable",
+                status: status.as_u16(),
+                detail: "Aucune route ne correspond à cette requête.".to_owned(),
+                instance: instance.to_owned(),
+                code: "route_not_found",
+            },
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let mut response = (self.status, Json(self.problem)).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/problem+json"),
+        );
+        response
+    }
 }
 
 #[utoipa::path(
@@ -93,6 +149,25 @@ async fn readiness() -> Json<HealthResponse> {
     health_payload("ready")
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/session",
+    tag = "authentication",
+    responses(
+        (status = 200, description = "Session active et permissions effectives", body = SessionResponse),
+        (status = 401, description = "Authentification requise", body = ProblemDetails)
+    )
+)]
+async fn session(
+    uri: Uri,
+    principal: Option<Extension<Principal>>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    principal.map_or_else(
+        || Err(ApiError::authentication_required(uri.path())),
+        |Extension(principal)| Ok(Json(SessionResponse { principal })),
+    )
+}
+
 fn health_payload(status: &'static str) -> Json<HealthResponse> {
     Json(HealthResponse {
         status,
@@ -108,9 +183,19 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         version = "0.1.0",
         description = "API contract for CollectionOps clients"
     ),
-    paths(service_info, health, liveness, readiness),
-    components(schemas(HealthResponse, ServiceInfoResponse, ProblemDetails)),
-    tags((name = "system", description = "État et métadonnées du service"))
+    paths(service_info, health, liveness, readiness, session),
+    components(schemas(
+        HealthResponse,
+        ServiceInfoResponse,
+        ProblemDetails,
+        SessionResponse,
+        Principal,
+        crate::security::Permission
+    )),
+    tags(
+        (name = "system", description = "État et métadonnées du service"),
+        (name = "authentication", description = "Session et identité applicative")
+    )
 )]
 pub struct ApiDoc;
 
@@ -118,19 +203,8 @@ async fn openapi() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-async fn not_found(uri: Uri) -> (StatusCode, Json<ProblemDetails>) {
-    let status = StatusCode::NOT_FOUND;
-    (
-        status,
-        Json(ProblemDetails {
-            type_url: "about:blank",
-            title: "Ressource introuvable",
-            status: status.as_u16(),
-            detail: "Aucune route ne correspond à cette requête.".to_owned(),
-            instance: uri.path().to_owned(),
-            code: "route_not_found",
-        }),
-    )
+async fn not_found(uri: Uri) -> ApiError {
+    ApiError::route_not_found(uri.path())
 }
 
 async fn request_context(mut request: Request, next: Next) -> Response {
@@ -169,6 +243,7 @@ pub fn app() -> Router {
         .route(&format!("{API_PREFIX}/health"), get(health))
         .route(&format!("{API_PREFIX}/health/live"), get(liveness))
         .route(&format!("{API_PREFIX}/health/ready"), get(readiness))
+        .route(&format!("{API_PREFIX}/session"), get(session))
         .route("/api/openapi.json", get(openapi))
         .fallback(not_found)
         .layer(
