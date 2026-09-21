@@ -45,7 +45,6 @@ async fn openapi() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-#[must_use]
 pub fn app() -> Router {
     Router::new()
         .route(&format!("{API_PREFIX}/health"), get(health))
