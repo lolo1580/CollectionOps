@@ -11,6 +11,7 @@ Le projet entre dans sa phase de développement. Le socle initial contient :
 - la documentation de la décision technologique et de l’architecture ;
 - des tests backend initiaux ;
 - un [journal des modifications](CHANGELOG.md) maintenu à partir du premier changement.
+- une intégration continue séparée pour le backend Linux et le client Windows.
 
 Aucune base de données, infrastructure distante ou intégration S3 n’est créée à ce stade.
 
@@ -73,6 +74,8 @@ cargo test --workspace --all-features
 
 Les consignes détaillées figurent dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
+GitHub Actions exécute automatiquement ces contrôles pour le backend. Un second workflow restaure et compile le client WinUI 3 sur un runner Windows x64. Aucun workflow ne déploie l’application.
+
 ## Planification
 
 Le travail est organisé dans les [milestones GitHub](https://github.com/lolo1580/CollectionOps/milestones). Les fonctionnalités ne doivent pas être implémentées avant validation de leurs règles métier et critères d’acceptation.
@@ -83,4 +86,3 @@ Le travail est organisé dans les [milestones GitHub](https://github.com/lolo158
 - [ADR-0001 — Socle technologique](docs/architecture/ADR-0001-technology-stack.md)
 - [Journal des modifications](CHANGELOG.md)
 - [Guide de contribution](CONTRIBUTING.md)
-

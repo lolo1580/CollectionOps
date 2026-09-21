@@ -1,7 +1,4 @@
-use axum::{
-    Json, Router,
-    routing::get,
-};
+use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 use utoipa::{OpenApi, ToSchema};
@@ -55,4 +52,3 @@ pub fn app() -> Router {
         .route("/api/openapi.json", get(openapi))
         .layer(TraceLayer::new_for_http())
 }
-

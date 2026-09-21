@@ -13,12 +13,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Squelette du client Windows .NET 10/WinUI 3 avec navigation latérale.
 - Première décision d’architecture et vue d’ensemble du système.
 - Règles de contribution et de maintenance du présent changelog.
+- Intégration continue du backend : formatage, Clippy et tests sous Linux.
+- Intégration continue du client Windows : restauration et compilation WinUI 3 en mode Release x64.
 
 ### Sécurité
 
 - Interdiction du code Rust non sûr au niveau du workspace.
 - Exclusion des fichiers de configuration locale et secrets du suivi Git.
 - Aucun accès à MariaDB, stockage documentaire ou service distant dans le socle initial.
-
-[Non publié]: https://github.com/lolo1580/CollectionOps/compare/HEAD...HEAD
-

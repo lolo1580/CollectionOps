@@ -49,4 +49,3 @@ async fn openapi_document_exposes_health_contract() {
 
     assert!(payload["paths"]["/api/v1/health"].is_object());
 }
-

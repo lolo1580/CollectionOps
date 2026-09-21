@@ -32,4 +32,3 @@ async fn shutdown_signal() {
         tracing::error!(%error, "failed to listen for shutdown signal");
     }
 }
-
