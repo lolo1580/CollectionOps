@@ -1,0 +1,22 @@
+<Page
+    x:Class="CollectionOps.Client.Views.DashboardPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <StackPanel Padding="32" Spacing="16">
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="CollectionOps" />
+            <TextBlock
+                MaxWidth="720"
+                HorizontalAlignment="Left"
+                Style="{StaticResource BodyLargeTextBlockStyle}"
+                Text="Le socle du client Windows est prêt. Les tableaux de bord seront construits à partir des exigences validées." />
+            <InfoBar
+                IsClosable="False"
+                IsOpen="True"
+                Message="Aucune connexion au backend ou base locale n’est encore configurée."
+                Severity="Informational"
+                Title="Phase initiale" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>
+

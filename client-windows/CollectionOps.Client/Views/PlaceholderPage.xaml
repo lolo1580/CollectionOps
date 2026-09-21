@@ -1,0 +1,10 @@
+<Page
+    x:Class="CollectionOps.Client.Views.PlaceholderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Padding="32" Spacing="12">
+        <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" />
+        <TextBlock Text="Ce module sera implémenté après validation de son périmètre fonctionnel." />
+    </StackPanel>
+</Page>
+

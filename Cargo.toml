@@ -1,0 +1,17 @@
+[workspace]
+members = ["backend"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+repository = "https://github.com/lolo1580/CollectionOps"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
