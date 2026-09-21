@@ -22,6 +22,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Modèle d’identité et catalogue initial de permissions effectives.
 - Endpoint protégé `GET /api/v1/session`, fermé par défaut en l’absence d’identité vérifiée.
 - ADR consacré à la frontière d’authentification et d’autorisation.
+- Hachage local des mots de passe avec Argon2id et sels aléatoires.
+- Génération de jetons de session opaques de 256 bits et empreintes SHA-256 comparées en temps constant.
+- ADR définissant les règles de protection des identifiants locaux et secrets de session.
 
 ### Sécurité
 
@@ -30,3 +33,4 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Aucun accès à MariaDB, stockage documentaire ou service distant dans le socle initial.
 - Validation des identifiants de requête fournis par les clients et ajout des en-têtes `nosniff` et `no-referrer`.
 - Séparation explicite des permissions financières et refus par défaut des accès protégés.
+- Expurgation des secrets et empreintes dans leurs représentations de débogage.

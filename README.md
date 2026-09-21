@@ -66,6 +66,8 @@ Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID four
 
 Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Aucun fournisseur d’authentification réel n’est encore branché : `/api/v1/session` répond donc `401` tant qu’un composant vérifié n’a pas injecté le principal.
 
+Les primitives locales utilisent Argon2id pour les mots de passe et des jetons de session opaques de 256 bits. Seules les empreintes des jetons sont destinées à être persistées. Les routes de connexion, la persistance et les politiques d’expiration restent volontairement absentes tant que leurs décisions fonctionnelles ne sont pas validées.
+
 ## Démarrer le client Windows
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
@@ -93,5 +95,6 @@ Le travail est organisé dans les [milestones GitHub](https://github.com/lolo158
 - [Vue d’ensemble de l’architecture](docs/architecture/overview.md)
 - [ADR-0001 — Socle technologique](docs/architecture/ADR-0001-technology-stack.md)
 - [ADR-0002 — Frontière d’authentification et d’autorisation](docs/architecture/ADR-0002-authentication-boundary.md)
+- [ADR-0003 — Identifiants locaux et secrets de session](docs/architecture/ADR-0003-local-credentials-and-sessions.md)
 - [Journal des modifications](CHANGELOG.md)
 - [Guide de contribution](CONTRIBUTING.md)
