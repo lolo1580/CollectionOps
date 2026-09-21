@@ -15,9 +15,14 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Règles de contribution et de maintenance du présent changelog.
 - Intégration continue du backend : formatage, Clippy et tests sous Linux.
 - Intégration continue du client Windows : restauration et compilation WinUI 3 en mode Release x64.
+- Configuration typée de l’adresse d’écoute du backend.
+- Endpoints distincts d’information, de vie et de disponibilité du service.
+- Format JSON normalisé pour les routes introuvables.
+- Génération et propagation d’un identifiant UUID `x-request-id` pour chaque requête.
 
 ### Sécurité
 
 - Interdiction du code Rust non sûr au niveau du workspace.
 - Exclusion des fichiers de configuration locale et secrets du suivi Git.
 - Aucun accès à MariaDB, stockage documentaire ou service distant dans le socle initial.
+- Validation des identifiants de requête fournis par les clients et ajout des en-têtes `nosniff` et `no-referrer`.

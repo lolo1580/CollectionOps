@@ -55,8 +55,13 @@ COLLECTIONOPS_BIND=0.0.0.0:8080 cargo run -p collectionops-backend
 
 Points d’entrée initiaux :
 
+- `GET http://127.0.0.1:8080/api/v1`
 - `GET http://127.0.0.1:8080/api/v1/health`
+- `GET http://127.0.0.1:8080/api/v1/health/live`
+- `GET http://127.0.0.1:8080/api/v1/health/ready`
 - `GET http://127.0.0.1:8080/api/openapi.json`
+
+Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
 
 ## Démarrer le client Windows
 

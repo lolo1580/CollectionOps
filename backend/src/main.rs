@@ -1,10 +1,6 @@
-use std::{env, net::SocketAddr};
-
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-
-const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8080";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,9 +10,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let address: SocketAddr = env::var("COLLECTIONOPS_BIND")
-        .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned())
-        .parse()?;
+    let config = collectionops_backend::AppConfig::from_env()?;
+    let address = config.bind_address();
     let listener = TcpListener::bind(address).await?;
 
     info!(%address, "CollectionOps backend listening");
