@@ -6,6 +6,12 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Création d'objet avec attribution du numéro d'inventaire dans une transaction verrouillant le compteur de l'espace, et refus d'un nom vide ou dépassant 255 caractères.
+- Transfert d'objet renuméroté dans l'espace de destination, avec conservation de l'ancien et du nouveau numéro dans l'historique et augmentation de la révision.
+- Refus d'un transfert dont la révision est obsolète, d'une destination identique à la source et d'une destination sans compteur, sans modifier l'objet ni consommer de numéro.
+- Lecture d'un objet, de son historique de transferts et du propriétaire courant d'un espace, en préparation des contrôles d'autorisation par espace.
+- Tests d'intégration de concurrence : dix créations simultanées obtiennent dix numéros distincts, et deux transferts simultanés du même objet n'en laissent gagner qu'un.
+- Aide de test partagée imposant l'ordre de suppression des tables, pour qu'une nouvelle table ne casse plus les autres suites par contrainte de clé étrangère.
 - Routes de connexion `POST /api/v1/sessions`, de liste `GET /api/v1/sessions` et de révocation `DELETE /api/v1/sessions/{session_id}`, montées uniquement lorsque la persistance est configurée.
 - Réponse de connexion renvoyant le jeton une seule fois, dans un en-tête `x-session-token` dédié plutôt qu'un cookie ou un paramètre d'URL.
 - Réponse identique pour un mot de passe faux et une adresse inconnue, afin d'empêcher l'énumération des comptes.

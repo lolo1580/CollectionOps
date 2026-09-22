@@ -56,7 +56,7 @@ La forme du jeton et le contenu du `Principal` ne doivent pas être utilisés co
 
 Ces réponses précèdent les migrations complémentaires et les routes de comptes et invitations. Les transactions et contraintes ci-dessus servent de critères de revue pour les dépôts et routes à venir.
 
-La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, et la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail, l'empreinte Argon2id du mot de passe et l'horodatage de vérification. Le composant SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini, et le premier administrateur est provisionné de façon idempotente. Les invitations restent isolées dans un [brouillon SQL distinct](../schema/invitations-draft.sql), à convertir en migration après la définition de l'identité e-mail, du parcours de compte et de l'audit.
+La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail, l'empreinte Argon2id du mot de passe et l'horodatage de vérification, et la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions par appareil. Le composant SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini, et le premier administrateur est provisionné de façon idempotente. Les invitations restent isolées dans un [brouillon SQL distinct](../schema/invitations-draft.sql), à convertir en migration après la définition de l'identité e-mail, du parcours de compte et de l'audit.
 
 ## Invitation et acceptation
 
@@ -67,6 +67,8 @@ Le serveur génère un jeton opaque de 256 bits avec le générateur cryptograph
 La création et la réémission verrouillent la ligne de l'espace pour sérialiser les invitations vers la même adresse. La réémission révoque l'invitation active précédente, insère une nouvelle invitation et journalise l'opération dans la même transaction. La révocation prend effet avant tout envoi d'un nouveau lien. Le service ne doit pas accepter un lien expiré même si un nettoyage différé laisse sa ligne en base.
 
 ## Attribution des numéros dans une transaction
+
+**État : implémenté et couvert par des tests.** `create_item` et `transfer_item` appliquent les règles ci-dessous ; la création d'espaces qui doit insérer la ligne de compteur reste à écrire.
 
 La table `inventory_counters` contient une ligne par espace, créée avec l'espace et initialisée à `1`. La valeur `next_number` désigne le prochain numéro libre, jamais un numéro déjà utilisé. La création d'un objet suit cet ordre dans une seule transaction : vérifier les droits sur l'espace, verrouiller sa ligne de compteur avec `SELECT ... FOR UPDATE`, lire `next_number`, l'incrémenter, insérer l'objet avec le numéro lu, puis valider. Un échec annule aussi l'incrément. L'unicité `(space_id, inventory_number)` protège la règle même si un appelant commet une erreur.
 

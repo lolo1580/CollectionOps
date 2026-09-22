@@ -70,6 +70,14 @@ Les primitives locales utilisent Argon2id pour les mots de passe et des jetons d
 
 Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
 
+## Attribution des numéros d'inventaire
+
+Chaque espace possède une ligne de compteur (`inventory_counters`) initialisée à `1`. Le serveur attribue le numéro, jamais le client : la transaction verrouille la ligne du compteur, lit la valeur, l'incrémente et crée l'objet. Un échec annule aussi la réservation, donc un numéro n'est jamais gaspillé par une tentative refusée. L'unicité `(space_id, inventory_number)` reste une seconde ligne de défense.
+
+Un transfert verrouille l'objet, vérifie la révision présentée par le client, puis réserve le prochain numéro de l'espace de destination et enregistre l'ancien et le nouveau numéro dans l'historique. L'identifiant de l'objet ne change jamais ; en revanche le numéro change, et les anciens numéros ne sont pas réutilisés. Une révision obsolète est refusée sans rien modifier.
+
+Ces opérations sont implémentées dans la couche de persistance et couvertes par des tests de concurrence réels. Les routes HTTP correspondantes restent à écrire.
+
 ## Routes de session
 
 | Méthode | Route | Rôle |

@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : brouillon de contrat ; aucune route ci-dessous n'est encore exposée.
+- Statut : brouillon de contrat. La couche de persistance correspondante est implémentée et testée ; les routes HTTP ne sont pas encore exposées.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -49,4 +49,4 @@ Le backend verrouille l'objet, vérifie sa révision, son espace courant et les 
 
 ## Hors de cette première tranche
 
-L'inscription, la connexion, les invitations, les listes paginées, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. Les routes de cette page seront ajoutées à OpenAPI seulement lorsqu'un fournisseur d'authentification et le dépôt MariaDB permettront leur implémentation sûre. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
+La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations, les listes paginées, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. Les routes de cette page seront ajoutées à OpenAPI lorsqu'un parcours d'authentification vérifié et la création d'espaces seront disponibles. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
