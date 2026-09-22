@@ -102,6 +102,17 @@ Sans `COLLECTIONOPS_DATABASE_URL`, le service démarre sans persistance et n'ouv
 
 Le premier administrateur n'est créé que si aucun compte ne porte déjà le drapeau d'administration ; l'opération est donc idempotente et peut rester dans la configuration. Les deux variables `EMAIL` et `PASSWORD` vont de pair : n'en définir qu'une seule fait échouer le démarrage. Le mot de passe est haché avec Argon2id avant d'atteindre MariaDB et n'apparaît ni en base ni dans les journaux. Le compte est marqué comme vérifié, puisqu'il est créé par l'exploitant.
 
+## Durées de session
+
+| Réglage client | Verrouillage après inactivité | Durée de vie du jeton |
+|---|---|---|
+| 15 minutes | 15 minutes | 12 heures |
+| 30 minutes | 30 minutes | 12 heures |
+| 1 heure | 1 heure | 12 heures |
+| Jamais | aucun | 7 jours |
+
+Le réglage client ne choisit que le délai d'inactivité ; la durée de vie du jeton reste décidée par le serveur et plafonnée à sept jours.
+
 GitHub Actions exécute automatiquement ces contrôles pour le backend. Un second workflow restaure et compile le client WinUI 3 sur un runner Windows x64. Aucun workflow ne déploie l’application.
 
 ## Planification

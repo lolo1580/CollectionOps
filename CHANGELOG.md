@@ -6,6 +6,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Troisième migration MariaDB créant les sessions par appareil, avec empreinte du jeton, délai d'inactivité, dernière activité, expiration absolue et révocation.
+- Politique de session : un jeton par appareil, renouvelé à chaque connexion, délai d'inactivité choisi par le client (15 min, 30 min, 1 h ou jamais) et plafond serveur de sept jours garanti par une contrainte de schéma.
+- Vérification du mot de passe Argon2id à la connexion, avec rafraîchissement de l'horloge d'inactivité et refus des jetons révoqués, expirés ou inconnus.
+- Révocation d'une session et liste des sessions d'un compte, sans exposer d'empreinte ni de jeton.
+- Tests d'intégration couvrant le renouvellement du jeton, l'indépendance des appareils, le plafond de sept jours, la révocation immédiate et l'expiration par inactivité.
 - Deuxième migration MariaDB ajoutant l'adresse e-mail, l'empreinte Argon2id du mot de passe et l'horodatage de vérification aux comptes.
 - Provisionnement idempotent du premier administrateur à partir de `COLLECTIONOPS_BOOTSTRAP_ADMIN_EMAIL` et `COLLECTIONOPS_BOOTSTRAP_ADMIN_PASSWORD`, avec refus d'une configuration partielle.
 - Connexion MariaDB et application des migrations au démarrage lorsque `COLLECTIONOPS_DATABASE_URL` est défini, avec refus de démarrer si la base est injoignable.
@@ -44,6 +49,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - ADR définissant les règles de protection des identifiants locaux et secrets de session.
 
 ### Sécurité
+
+- Seule l'empreinte SHA-256 du jeton de session est persistée ; le jeton en clair n'existe que dans la réponse de connexion et n'est jamais journalisé.
+- Le délai d'inactivité et l'expiration absolue sont vérifiés côté serveur à chaque requête ; un réglage client ne peut pas prolonger la vie d'un jeton au-delà de sept jours.
+- Le schéma refuse toute session dont l'expiration absolue dépasse sept jours après sa création.
 
 - Le mot de passe du premier administrateur est haché avant l'insertion et sa représentation de débogage est expurgée.
 - Aucune colonne ne peut contenir un mot de passe en clair ; les tests le vérifient sur le schéma et sur la valeur stockée.

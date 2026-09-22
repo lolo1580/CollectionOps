@@ -94,18 +94,24 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 | D05 | Quelles sont les règles d'archivage, de corbeille, de conservation et de suppression définitive ? | Stockage, sauvegarde, droits, audit. |
 | D06 | Quelle visibilité donner aux prix et documents lorsque l'objet est partagé ? | Matrice des permissions, contrats API. |
 | D07 | Quelles règles de devise, taux historique, arrondi et valeur sans estimation appliquer ? | Calculs, budgets, rapports financiers. |
-| D08 | Quelles durées de session, règles de reconnexion, de révocation et de purge locale appliquer ? | Sessions, client hors ligne, sécurité. |
 | D09 | Quels conflits hors ligne peuvent être fusionnés automatiquement et lesquels exigent un choix humain ? | Protocole de synchronisation. |
 | D10 | Quels formats d'import/export et quelles limites de taille documentaire retenir pour la V1 ? | API, stockage, recette. |
 
-### Hypothèse de sécurité encore proposée
+### Durées de session validées (ex-D08)
 
-Pour D08, une révocation bloquerait immédiatement l'accès serveur. Les durées de session et la purge de la copie locale restent à définir avant le mode hors ligne.
+Décision prise le 2026-09-22, détaillée dans [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md) :
+
+- un jeton par appareil, jamais partagé entre clients ;
+- un nouveau jeton à chaque connexion, jamais réutilisé ;
+- verrouillage du client après 15 minutes, 30 minutes, 1 heure ou jamais d'inactivité ; le délai court depuis la dernière activité ;
+- plafond serveur de sept jours, appliqué par le schéma, y compris pour le réglage « jamais ».
+
+La purge de la copie locale reste à définir avant le mode hors ligne.
 
 ## Première tranche proposée après validation
 
-1. Établir la matrice des permissions par opération et par espace ; préciser la délégation du propriétaire et D08.
-2. Définir le modèle conceptuel des comptes, espaces, adhésions et objets, avec cardinalités et règles de suppression. Détailler les sessions après validation de D08.
+1. Établir la matrice des permissions par opération et par espace ; préciser la délégation du propriétaire.
+2. Définir le modèle conceptuel des comptes, espaces, adhésions et objets, avec cardinalités et règles de suppression.
 3. Décrire les contrats API des parcours compte/espace/objet avant la persistance et le client réseau.
 4. Transformer F01 à F06 en scénarios de recette, comprenant au minimum les refus d'accès entre espaces et la révocation d'une session.
 

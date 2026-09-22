@@ -2,6 +2,7 @@
 
 - Statut : accepté pour le socle
 - Date : 2026-09-21
+- Complété le 2026-09-22 par la politique de session ci-dessous.
 
 ## Contexte
 
@@ -23,6 +24,7 @@ L’authentification locale doit résister à la compromission de la base, perme
 - Seule son empreinte SHA-256 est destinée à être persistée. La comparaison des empreintes est effectuée en temps constant.
 - Le jeton complet n’est exposé qu’au moment nécessaire à son transport et ses représentations de débogage sont expurgées.
 - Les jetons devront être transmis exclusivement via un canal TLS authentifié.
+- La politique de durée est fixée ci-dessous ; les autres décisions restent ouvertes.
 - La rotation après authentification ou changement de privilège, l’expiration absolue et d’inactivité, ainsi que la révocation par appareil seront appliquées par le futur dépôt de sessions.
 
 ## Décisions restant à prendre
