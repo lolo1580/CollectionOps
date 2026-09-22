@@ -6,6 +6,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Routes de connexion `POST /api/v1/sessions`, de liste `GET /api/v1/sessions` et de révocation `DELETE /api/v1/sessions/{session_id}`, montées uniquement lorsque la persistance est configurée.
+- Réponse de connexion renvoyant le jeton une seule fois, dans un en-tête `x-session-token` dédié plutôt qu'un cookie ou un paramètre d'URL.
+- Réponse identique pour un mot de passe faux et une adresse inconnue, afin d'empêcher l'énumération des comptes.
+- Contrôle de propriété à la révocation : un compte ne peut révoquer que ses propres sessions.
+- Tests d'extrémité couvrant la connexion, le choix du délai d'inactivité, la révocation immédiate depuis un autre appareil et l'indépendance des appareils.
 - Troisième migration MariaDB créant les sessions par appareil, avec empreinte du jeton, délai d'inactivité, dernière activité, expiration absolue et révocation.
 - Politique de session : un jeton par appareil, renouvelé à chaque connexion, délai d'inactivité choisi par le client (15 min, 30 min, 1 h ou jamais) et plafond serveur de sept jours garanti par une contrainte de schéma.
 - Vérification du mot de passe Argon2id à la connexion, avec rafraîchissement de l'horloge d'inactivité et refus des jetons révoqués, expirés ou inconnus.
@@ -49,6 +54,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - ADR définissant les règles de protection des identifiants locaux et secrets de session.
 
 ### Sécurité
+
+- Le jeton de session circule dans un en-tête dédié, jamais dans un cookie ni une URL, pour ne pas fuiter par `Referer` ou par l'historique.
+- La connexion ne révèle pas si une adresse existe : mot de passe faux et compte inconnu produisent la même réponse.
+- Un compte ne peut révoquer que les sessions qui lui appartiennent.
 
 - Seule l'empreinte SHA-256 du jeton de session est persistée ; le jeton en clair n'existe que dans la réponse de connexion et n'est jamais journalisé.
 - Le délai d'inactivité et l'expiration absolue sont vérifiés côté serveur à chaque requête ; un réglage client ne peut pas prolonger la vie d'un jeton au-delà de sept jours.

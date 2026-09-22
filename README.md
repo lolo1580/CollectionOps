@@ -70,6 +70,20 @@ Les primitives locales utilisent Argon2id pour les mots de passe et des jetons d
 
 Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
 
+## Routes de session
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| `POST` | `/api/v1/sessions` | Se connecter et recevoir un jeton propre à l'appareil |
+| `GET` | `/api/v1/sessions` | Lister les sessions du compte |
+| `DELETE` | `/api/v1/sessions/{session_id}` | Révoquer un appareil |
+
+Le corps de connexion accepte `email`, `password`, un `device_label` facultatif, un `idle_timeout` facultatif (`minutes_15`, `minutes_30`, `hour_1`, `never`) et un `stay_signed_in` facultatif. Sans `idle_timeout`, le défaut est `minutes_30`.
+
+Un mot de passe faux et une adresse inconnue renvoient la **même** réponse `401`, afin que la route ne serve pas à découvrir quels comptes existent. Le jeton n'apparaît que dans la réponse de connexion.
+
+Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. Sans base, elles répondent `404` plutôt que d'échouer sur un pool absent.
+
 ## Démarrer le client Windows
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
