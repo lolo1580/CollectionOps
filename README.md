@@ -13,7 +13,7 @@ Le projet entre dans sa phase de développement. Le socle initial contient :
 - un [journal des modifications](CHANGELOG.md) maintenu à partir du premier changement.
 - une intégration continue séparée pour le backend Linux et le client Windows.
 
-Aucune base de données, infrastructure distante ou intégration S3 n’est créée à ce stade.
+Aucune base de données, infrastructure distante ou intégration S3 n’est créée à ce stade. Une première migration MariaDB est versionnée et peut être appliquée par le composant SQLx du backend ; elle n'est pas encore lancée au démarrage du service.
 
 ## Architecture retenue
 
@@ -64,9 +64,11 @@ Points d’entrée initiaux :
 
 Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
 
-Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Aucun fournisseur d’authentification réel n’est encore branché : `/api/v1/session` répond donc `401` tant qu’un composant vérifié n’a pas injecté le principal.
+Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Pour une ressource d'un espace, le backend doit aussi vérifier l'adhésion et les droits propres à cet espace ; `/api/v1/session` expose seulement les permissions applicatives du principal. Aucun fournisseur d’authentification réel n’est encore branché : cette route répond donc `401` tant qu’un composant vérifié n’a pas injecté le principal.
 
 Les primitives locales utilisent Argon2id pour les mots de passe et des jetons de session opaques de 256 bits. Seules les empreintes des jetons sont destinées à être persistées. Les routes de connexion, la persistance et les politiques d’expiration restent volontairement absentes tant que leurs décisions fonctionnelles ne sont pas validées.
+
+Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
 
 ## Démarrer le client Windows
 
@@ -84,11 +86,15 @@ cargo test --workspace --all-features
 
 Les consignes détaillées figurent dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Le test de migration peut être exécuté sur une base MariaDB de test dédiée avec `COLLECTIONOPS_TEST_DATABASE_URL=mysql://... cargo test -p collectionops-backend --test database`. Le service n'utilise pas encore cette base au démarrage.
+
 GitHub Actions exécute automatiquement ces contrôles pour le backend. Un second workflow restaure et compile le client WinUI 3 sur un runner Windows x64. Aucun workflow ne déploie l’application.
 
 ## Planification
 
 Le travail est organisé dans les [milestones GitHub](https://github.com/lolo1580/CollectionOps/milestones). Les fonctionnalités ne doivent pas être implémentées avant validation de leurs règles métier et critères d’acceptation.
+
+Un [brouillon du cahier des charges fonctionnel V1](docs/product/cahier-des-charges-v1.md) rassemble les exigences proposées, leurs critères d'acceptation et les décisions métier à valider pour le premier jalon.
 
 ## Documentation
 
@@ -96,5 +102,10 @@ Le travail est organisé dans les [milestones GitHub](https://github.com/lolo158
 - [ADR-0001 — Socle technologique](docs/architecture/ADR-0001-technology-stack.md)
 - [ADR-0002 — Frontière d’authentification et d’autorisation](docs/architecture/ADR-0002-authentication-boundary.md)
 - [ADR-0003 — Identifiants locaux et secrets de session](docs/architecture/ADR-0003-local-credentials-and-sessions.md)
+- [ADR-0004 — Autorisation par espace](docs/architecture/ADR-0004-space-authorization.md)
+- [Modèle conceptuel du premier lot V1 — brouillon](docs/architecture/data-model-v1-draft.md)
+- [Première migration MariaDB du noyau](backend/migrations/202609220001_core.sql)
+- [Brouillon SQL des invitations](docs/schema/invitations-draft.sql)
+- [Contrat API v1 des premières opérations sur les objets — brouillon](docs/api/v1-core-draft.md)
 - [Journal des modifications](CHANGELOG.md)
 - [Guide de contribution](CONTRIBUTING.md)
