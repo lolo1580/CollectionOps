@@ -15,11 +15,11 @@ const PASSWORD: &str = "correct horse battery staple";
 /// A database with one account and two spaces, ready for inventory work.
 struct Fixture {
     database: Database,
-    owner_id: String,
+    owner_id: Uuid,
     /// First space, used as the source in transfer tests.
-    space_a: String,
+    space_a: Uuid,
     /// Second space, used as the destination in transfer tests.
-    space_b: String,
+    space_b: Uuid,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -40,14 +40,14 @@ async fn fixture() -> Option<Fixture> {
         .await
         .expect("provisioning must succeed");
 
-    let owner_id = read_scalar_text(
+    let owner_id = read_uuid(
         &database,
         "SELECT id FROM accounts WHERE is_system_admin = TRUE",
     )
     .await;
 
-    let space_a = create_space(&database, "Espace A", &owner_id).await;
-    let space_b = create_space(&database, "Espace B", &owner_id).await;
+    let space_a = create_space(&database, "Espace A", owner_id).await;
+    let space_b = create_space(&database, "Espace B", owner_id).await;
 
     Some(Fixture {
         database,
@@ -58,20 +58,23 @@ async fn fixture() -> Option<Fixture> {
     })
 }
 
-/// Inserts a space plus its counter row, mirroring what the (future) space route will do.
-async fn create_space(database: &Database, name: &str, owner_id: &str) -> String {
-    let id = Uuid::now_v7().to_string();
+/// Inserts a raw space, to prove the inventory layer behaves even without `create_space`.
+///
+/// `space.id` and its counter are normally created together by
+/// [`collectionops_backend::Database::create_space`], which other suites cover.
+async fn create_space(database: &Database, name: &str, owner_id: Uuid) -> Uuid {
+    let id = Uuid::now_v7();
 
     sqlx::query("INSERT INTO spaces (id, name, owner_account_id) VALUES (?, ?, ?)")
-        .bind(&id)
+        .bind(id.to_string())
         .bind(name)
-        .bind(owner_id)
+        .bind(owner_id.to_string())
         .execute(database.pool())
         .await
         .expect("the space must be insertable");
 
     sqlx::query("INSERT INTO inventory_counters (space_id, next_number) VALUES (?, 1)")
-        .bind(&id)
+        .bind(id.to_string())
         .execute(database.pool())
         .await
         .expect("the counter must be insertable");
@@ -79,12 +82,13 @@ async fn create_space(database: &Database, name: &str, owner_id: &str) -> String
     id
 }
 
-async fn read_scalar_text(database: &Database, query: &str) -> String {
+async fn read_uuid(database: &Database, query: &str) -> Uuid {
     let raw: Vec<u8> = sqlx::query_scalar(query)
         .fetch_one(database.pool())
         .await
         .expect("the query must return one column");
-    String::from_utf8(raw).expect("the column must be UTF-8")
+    Uuid::parse_str(&String::from_utf8(raw).expect("the column must be UTF-8"))
+        .expect("the column must hold a UUID")
 }
 
 #[tokio::test]
@@ -97,7 +101,7 @@ async fn items_get_consecutive_numbers_starting_at_one() {
     for name in ["Appareil photo", "Objectif", "Trépied"] {
         let item = fixture
             .database
-            .create_item(&fixture.space_a, name, &fixture.owner_id)
+            .create_item(fixture.space_a, name, fixture.owner_id)
             .await
             .expect("creation must succeed");
 
@@ -121,12 +125,12 @@ async fn each_space_has_its_own_numbering() {
 
     let in_a = fixture
         .database
-        .create_item(&fixture.space_a, "Objet A", &fixture.owner_id)
+        .create_item(fixture.space_a, "Objet A", fixture.owner_id)
         .await
         .unwrap();
     let in_b = fixture
         .database
-        .create_item(&fixture.space_b, "Objet B", &fixture.owner_id)
+        .create_item(fixture.space_b, "Objet B", fixture.owner_id)
         .await
         .unwrap();
 
@@ -148,11 +152,11 @@ async fn concurrent_creations_never_share_a_number() {
     let mut tasks = Vec::new();
     for index in 0..10 {
         let database = fixture.database.clone();
-        let space_id = fixture.space_a.clone();
-        let owner_id = fixture.owner_id.clone();
+        let space_id = fixture.space_a;
+        let owner_id = fixture.owner_id;
         tasks.push(tokio::spawn(async move {
             database
-                .create_item(&space_id, &format!("Objet {index}"), &owner_id)
+                .create_item(space_id, &format!("Objet {index}"), owner_id)
                 .await
         }));
     }
@@ -182,7 +186,7 @@ async fn a_failed_creation_does_not_burn_a_number() {
 
     let first = fixture
         .database
-        .create_item(&fixture.space_a, "Premier", &fixture.owner_id)
+        .create_item(fixture.space_a, "Premier", fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(first.inventory_number, 1);
@@ -191,7 +195,7 @@ async fn a_failed_creation_does_not_burn_a_number() {
     assert_eq!(
         fixture
             .database
-            .create_item(&fixture.space_a, "   ", &fixture.owner_id)
+            .create_item(fixture.space_a, "   ", fixture.owner_id)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -200,7 +204,7 @@ async fn a_failed_creation_does_not_burn_a_number() {
 
     let next = fixture
         .database
-        .create_item(&fixture.space_a, "Deuxième", &fixture.owner_id)
+        .create_item(fixture.space_a, "Deuxième", fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(
@@ -217,7 +221,7 @@ async fn a_name_is_trimmed_and_bounded() {
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "  Appareil photo  ", &fixture.owner_id)
+        .create_item(fixture.space_a, "  Appareil photo  ", fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(item.name, "Appareil photo");
@@ -225,7 +229,7 @@ async fn a_name_is_trimmed_and_bounded() {
     assert_eq!(
         fixture
             .database
-            .create_item(&fixture.space_a, &"a".repeat(256), &fixture.owner_id)
+            .create_item(fixture.space_a, &"a".repeat(256), fixture.owner_id)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -235,7 +239,7 @@ async fn a_name_is_trimmed_and_bounded() {
     // Exactly at the limit is accepted.
     let at_limit = fixture
         .database
-        .create_item(&fixture.space_a, &"b".repeat(255), &fixture.owner_id)
+        .create_item(fixture.space_a, &"b".repeat(255), fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(at_limit.name.len(), 255);
@@ -250,25 +254,25 @@ async fn a_transfer_renumbers_the_item_and_keeps_the_old_number_in_history() {
     // Space B already holds two objects, so the moved item must land on number 3.
     fixture
         .database
-        .create_item(&fixture.space_b, "B1", &fixture.owner_id)
+        .create_item(fixture.space_b, "B1", fixture.owner_id)
         .await
         .unwrap();
     fixture
         .database
-        .create_item(&fixture.space_b, "B2", &fixture.owner_id)
+        .create_item(fixture.space_b, "B2", fixture.owner_id)
         .await
         .unwrap();
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "Appareil photo", &fixture.owner_id)
+        .create_item(fixture.space_a, "Appareil photo", fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(item.inventory_number, 1);
 
     let outcome = fixture
         .database
-        .transfer_item(&item.id, &fixture.space_b, 1, &fixture.owner_id)
+        .transfer_item(item.id, fixture.space_b, 1, fixture.owner_id)
         .await
         .expect("the transfer must succeed");
 
@@ -285,14 +289,14 @@ async fn a_transfer_renumbers_the_item_and_keeps_the_old_number_in_history() {
     assert_eq!(outcome.transfer.destination_space_id, fixture.space_b);
     assert_eq!(outcome.transfer.destination_inventory_number, 3);
 
-    let history = fixture.database.item_transfers(&item.id).await.unwrap();
+    let history = fixture.database.item_transfers(item.id).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, outcome.transfer.id);
 
     // The old number in the source space is free again but must not be reused by the item.
     let back = fixture
         .database
-        .transfer_item(&item.id, &fixture.space_a, 2, &fixture.owner_id)
+        .transfer_item(item.id, fixture.space_a, 2, fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(
@@ -310,13 +314,13 @@ async fn a_stale_revision_is_refused_and_changes_nothing() {
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "Objet", &fixture.owner_id)
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
         .await
         .unwrap();
 
     let moved = fixture
         .database
-        .transfer_item(&item.id, &fixture.space_b, 1, &fixture.owner_id)
+        .transfer_item(item.id, fixture.space_b, 1, fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(moved.item.revision, 2);
@@ -325,7 +329,7 @@ async fn a_stale_revision_is_refused_and_changes_nothing() {
     assert_eq!(
         fixture
             .database
-            .transfer_item(&item.id, &fixture.space_a, 1, &fixture.owner_id)
+            .transfer_item(item.id, fixture.space_a, 1, fixture.owner_id)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -333,13 +337,13 @@ async fn a_stale_revision_is_refused_and_changes_nothing() {
     );
 
     // Nothing was lost: the item is still where the accepted transfer put it.
-    let current = fixture.database.item(&item.id).await.unwrap();
+    let current = fixture.database.item(item.id).await.unwrap();
     assert_eq!(current.space_id, fixture.space_b);
     assert_eq!(current.revision, 2);
     assert_eq!(
         fixture
             .database
-            .item_transfers(&item.id)
+            .item_transfers(item.id)
             .await
             .unwrap()
             .len(),
@@ -351,12 +355,12 @@ async fn a_stale_revision_is_refused_and_changes_nothing() {
     // counter, so the next arrival takes number 2, not 3.
     let other = fixture
         .database
-        .create_item(&fixture.space_a, "Autre", &fixture.owner_id)
+        .create_item(fixture.space_a, "Autre", fixture.owner_id)
         .await
         .unwrap();
     let moved_other = fixture
         .database
-        .transfer_item(&other.id, &fixture.space_b, 1, &fixture.owner_id)
+        .transfer_item(other.id, fixture.space_b, 1, fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(
@@ -373,14 +377,14 @@ async fn transferring_into_the_current_space_is_refused() {
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "Objet", &fixture.owner_id)
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
         .await
         .unwrap();
 
     assert_eq!(
         fixture
             .database
-            .transfer_item(&item.id, &fixture.space_a, 1, &fixture.owner_id)
+            .transfer_item(item.id, fixture.space_a, 1, fixture.owner_id)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -394,12 +398,12 @@ async fn unknown_items_and_spaces_are_reported_as_not_found() {
         return;
     };
 
-    let missing = Uuid::now_v7().to_string();
+    let missing = Uuid::now_v7();
 
     assert_eq!(
         fixture
             .database
-            .item(&missing)
+            .item(missing)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -408,7 +412,7 @@ async fn unknown_items_and_spaces_are_reported_as_not_found() {
     assert_eq!(
         fixture
             .database
-            .space_owner(&missing)
+            .space_owner(missing)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -417,13 +421,13 @@ async fn unknown_items_and_spaces_are_reported_as_not_found() {
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "Objet", &fixture.owner_id)
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
         .await
         .unwrap();
     assert_eq!(
         fixture
             .database
-            .transfer_item(&item.id, &missing, 1, &fixture.owner_id)
+            .transfer_item(item.id, missing, 1, fixture.owner_id)
             .await
             .err()
             .and_then(|error| error.inventory_error()),
@@ -440,20 +444,20 @@ async fn concurrent_transfers_of_the_same_item_are_serialized() {
 
     let item = fixture
         .database
-        .create_item(&fixture.space_a, "Objet", &fixture.owner_id)
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
         .await
         .unwrap();
 
     // Two devices move the same item at revision 1, to different spaces. The row lock must
     // let exactly one win, and the loser must be told its revision is stale.
     let mut tasks = Vec::new();
-    for destination in [fixture.space_a.clone(), fixture.space_b.clone()] {
+    for destination in [fixture.space_a, fixture.space_b] {
         let database = fixture.database.clone();
-        let item_id = item.id.clone();
-        let owner_id = fixture.owner_id.clone();
+        let item_id = item.id;
+        let owner_id = fixture.owner_id;
         tasks.push(tokio::spawn(async move {
             database
-                .transfer_item(&item_id, &destination, 1, &owner_id)
+                .transfer_item(item_id, destination, 1, owner_id)
                 .await
         }));
     }
@@ -479,12 +483,12 @@ async fn concurrent_transfers_of_the_same_item_are_serialized() {
     assert_eq!(accepted, 1, "exactly one transfer may win");
     assert_eq!(conflicted, 1);
 
-    let current = fixture.database.item(&item.id).await.unwrap();
+    let current = fixture.database.item(item.id).await.unwrap();
     assert_eq!(current.revision, 2, "the item was moved exactly once");
     assert_eq!(
         fixture
             .database
-            .item_transfers(&item.id)
+            .item_transfers(item.id)
             .await
             .unwrap()
             .len(),

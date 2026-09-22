@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
@@ -10,6 +10,7 @@ use crate::{
         EmailAddress, IdleTimeout, PasswordHashValue, PasswordService, SessionLifetime,
         SessionToken,
     },
+    security::{Permission, SpaceMembership, SpaceOwnership},
 };
 
 /// A session row as shown to its owner, without any secret material.
@@ -62,22 +63,22 @@ pub struct Database {
 /// A collection item, with its server-assigned number and revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    pub id: String,
-    pub space_id: String,
+    pub id: Uuid,
+    pub space_id: Uuid,
     pub inventory_number: u64,
     pub name: String,
     pub revision: u64,
-    pub created_by_account_id: String,
+    pub created_by_account_id: Uuid,
     pub created_at: DateTime<Utc>,
 }
 
 /// A recorded move of an item between two spaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemTransfer {
-    pub id: String,
-    pub item_id: String,
-    pub source_space_id: String,
-    pub destination_space_id: String,
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub source_space_id: Uuid,
+    pub destination_space_id: Uuid,
     pub source_inventory_number: u64,
     pub destination_inventory_number: u64,
     pub transferred_at: DateTime<Utc>,
@@ -107,6 +108,74 @@ pub enum InventoryError {
     InvalidName,
     /// The counter row for the space is missing, which means the space was created without one.
     CounterMissing,
+}
+
+/// A space and its current owner.
+///
+/// Identifiers are UUIDs for the same reason as [`Membership`]: the space can be handed to an
+/// authorization check without parsing it again at every call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Space {
+    pub id: Uuid,
+    pub name: String,
+    pub owner_account_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Space {
+    /// Borrows the space in the shape the ownership check expects.
+    #[must_use]
+    pub fn as_space_ownership(&self) -> SpaceOwnership {
+        SpaceOwnership {
+            space_id: self.id,
+            owner_account_id: self.owner_account_id,
+        }
+    }
+}
+
+/// A membership of one account in one space, with the account's effective grants.
+///
+/// Identifiers are UUIDs and grants are a set, so this value can be handed straight to
+/// [`crate::security::Principal::require_space_permission`] without a lossy conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Membership {
+    pub space_id: Uuid,
+    pub account_id: Uuid,
+    /// Explicit grants, sorted. Never inferred from another grant or from the owner status.
+    pub permissions: BTreeSet<Permission>,
+}
+
+impl Membership {
+    /// Borrows this membership in the shape the authorization check expects.
+    #[must_use]
+    pub fn as_space_membership(&self) -> SpaceMembership {
+        SpaceMembership {
+            space_id: self.space_id,
+            account_id: self.account_id,
+            permissions: self.permissions.clone(),
+        }
+    }
+}
+
+/// Why a space or membership operation was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceError {
+    /// No space matches the identifier.
+    SpaceNotFound,
+    /// No account matches the identifier.
+    AccountNotFound,
+    /// The name is empty after trimming, or longer than the column allows.
+    InvalidName,
+    /// A grant is not a space-scoped permission, so it cannot live in a membership.
+    PermissionNotSpaceScoped,
+    /// The account is already a member of this space.
+    AlreadyMember,
+    /// The account is not a member of this space.
+    NotMember,
+    /// The owner cannot be removed from its own space, because a space has exactly one owner.
+    OwnerCannotBeRemoved,
+    /// Changing your own grants would let you grant yourself more than you hold.
+    CannotChangeOwnGrants,
 }
 
 impl Database {
@@ -268,7 +337,7 @@ impl Database {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
-        .bind(&account_id)
+        .bind(account_id.clone())
         .bind(fingerprint.as_bytes().as_slice())
         .bind(device_label)
         .bind(idle_timeout.stored_seconds())
@@ -376,7 +445,7 @@ impl Database {
                     absolute_expires_at, revoked_at \
              FROM account_sessions WHERE account_id = ? ORDER BY created_at DESC",
         )
-        .bind(account_id)
+        .bind(account_id.to_string())
         .fetch_all(&self.pool)
         .await
         .map_err(DatabaseError::Query)?;
@@ -424,15 +493,15 @@ impl Database {
     /// # Errors
     ///
     /// Returns [`DatabaseError::Inventory`] with `SpaceNotFound`, or a storage error.
-    pub async fn space_owner(&self, space_id: &str) -> Result<String, DatabaseError> {
+    pub async fn space_owner(&self, space_id: Uuid) -> Result<Uuid, DatabaseError> {
         let row = sqlx::query("SELECT owner_account_id FROM spaces WHERE id = ?")
-            .bind(space_id)
+            .bind(space_id.to_string())
             .fetch_optional(&self.pool)
             .await
             .map_err(DatabaseError::Query)?
             .ok_or(DatabaseError::Inventory(InventoryError::SpaceNotFound))?;
 
-        decode_text(&row, "owner_account_id")
+        parse_uuid(&decode_text(&row, "owner_account_id")?)
     }
 
     /// Creates an item and reserves its number in one transaction.
@@ -448,9 +517,9 @@ impl Database {
     /// or a missing counter row.
     pub async fn create_item(
         &self,
-        space_id: &str,
+        space_id: Uuid,
         name: &str,
-        created_by_account_id: &str,
+        created_by_account_id: Uuid,
     ) -> Result<Item, DatabaseError> {
         let name = name.trim();
 
@@ -465,7 +534,7 @@ impl Database {
         let next_number: Option<u64> = sqlx::query_scalar(
             "SELECT next_number FROM inventory_counters WHERE space_id = ? FOR UPDATE",
         )
-        .bind(space_id)
+        .bind(space_id.to_string())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -478,7 +547,7 @@ impl Database {
         sqlx::query(
             "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",
         )
-        .bind(space_id)
+        .bind(space_id.to_string())
         .execute(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -490,15 +559,15 @@ impl Database {
              VALUES (?, ?, ?, ?, 1, ?)",
         )
         .bind(&id)
-        .bind(space_id)
+        .bind(space_id.to_string())
         .bind(next_number)
         .bind(name)
-        .bind(created_by_account_id)
+        .bind(created_by_account_id.to_string())
         .execute(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
 
-        let item = fetch_item(&mut *transaction, &id).await?;
+        let item = fetch_item(&mut *transaction, parse_uuid(&id)?).await?;
         transaction.commit().await.map_err(DatabaseError::Query)?;
 
         Ok(item)
@@ -509,7 +578,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns [`DatabaseError::Inventory`] with `ItemNotFound`, or a storage error.
-    pub async fn item(&self, item_id: &str) -> Result<Item, DatabaseError> {
+    pub async fn item(&self, item_id: Uuid) -> Result<Item, DatabaseError> {
         fetch_item(&self.pool, item_id).await
     }
 
@@ -526,10 +595,10 @@ impl Database {
     /// a destination identical to the source, or a missing destination counter.
     pub async fn transfer_item(
         &self,
-        item_id: &str,
-        destination_space_id: &str,
+        item_id: Uuid,
+        destination_space_id: Uuid,
         expected_revision: u64,
-        actor_account_id: &str,
+        actor_account_id: Uuid,
     ) -> Result<TransferOutcome, DatabaseError> {
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
 
@@ -537,13 +606,13 @@ impl Database {
             "SELECT space_id, inventory_number, revision \
              FROM inventory_items WHERE id = ? FOR UPDATE",
         )
-        .bind(item_id)
+        .bind(item_id.to_string())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?
         .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
 
-        let source_space_id = decode_text(&row, "space_id")?;
+        let source_space_id = parse_uuid(&decode_text(&row, "space_id")?)?;
         let source_inventory_number: u64 = row
             .try_get("inventory_number")
             .map_err(DatabaseError::Query)?;
@@ -562,7 +631,7 @@ impl Database {
         let destination_next: Option<u64> = sqlx::query_scalar(
             "SELECT next_number FROM inventory_counters WHERE space_id = ? FOR UPDATE",
         )
-        .bind(destination_space_id)
+        .bind(destination_space_id.to_string())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -575,7 +644,7 @@ impl Database {
         sqlx::query(
             "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",
         )
-        .bind(destination_space_id)
+        .bind(destination_space_id.to_string())
         .execute(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -585,9 +654,9 @@ impl Database {
              SET space_id = ?, inventory_number = ?, revision = revision + 1 \
              WHERE id = ?",
         )
-        .bind(destination_space_id)
+        .bind(destination_space_id.to_string())
         .bind(destination_number)
-        .bind(item_id)
+        .bind(item_id.to_string())
         .execute(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -600,12 +669,12 @@ impl Database {
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&transfer_id)
-        .bind(item_id)
-        .bind(&source_space_id)
-        .bind(destination_space_id)
+        .bind(item_id.to_string())
+        .bind(source_space_id.to_string())
+        .bind(destination_space_id.to_string())
         .bind(source_inventory_number)
         .bind(destination_number)
-        .bind(actor_account_id)
+        .bind(actor_account_id.to_string())
         .execute(&mut *transaction)
         .await
         .map_err(DatabaseError::Query)?;
@@ -622,25 +691,440 @@ impl Database {
     /// # Errors
     ///
     /// Returns [`DatabaseError`] when the query fails.
-    pub async fn item_transfers(&self, item_id: &str) -> Result<Vec<ItemTransfer>, DatabaseError> {
+    pub async fn item_transfers(&self, item_id: Uuid) -> Result<Vec<ItemTransfer>, DatabaseError> {
         let rows = sqlx::query(
             "SELECT id, item_id, source_space_id, destination_space_id, source_inventory_number, \
                     destination_inventory_number, transferred_at \
              FROM inventory_transfers WHERE item_id = ? ORDER BY transferred_at DESC, id DESC",
         )
-        .bind(item_id)
+        .bind(item_id.to_string())
         .fetch_all(&self.pool)
         .await
         .map_err(DatabaseError::Query)?;
 
         rows.iter().map(decode_transfer).collect()
     }
+
+    /// Creates a space, its owner membership and its inventory counter in one transaction.
+    ///
+    /// A space without a counter row could not accept a single item, and a space without an
+    /// owner membership would be visible only to the owner through the ownership rule. Both
+    /// invariants are established here rather than left to callers.
+    ///
+    /// The owner receives `collections_write`, not every permission: the owner is not
+    /// automatically granted financial access, and nothing is ever inferred from ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] for an empty or oversized name, an unknown owner
+    /// account, or a conflicting membership.
+    pub async fn create_space(
+        &self,
+        name: &str,
+        owner_account_id: Uuid,
+    ) -> Result<Space, DatabaseError> {
+        let name = name.trim();
+
+        if name.is_empty() || name.chars().count() > MAX_SPACE_NAME_CHARS {
+            return Err(DatabaseError::Space(SpaceError::InvalidName));
+        }
+
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        let owner_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE id = ?")
+            .bind(owner_account_id.to_string())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        if owner_exists == 0 {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Space(SpaceError::AccountNotFound));
+        }
+
+        let space_id = Uuid::now_v7();
+
+        sqlx::query("INSERT INTO spaces (id, name, owner_account_id) VALUES (?, ?, ?)")
+            .bind(space_id.to_string())
+            .bind(name)
+            .bind(owner_account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        sqlx::query("INSERT INTO inventory_counters (space_id, next_number) VALUES (?, 1)")
+            .bind(space_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        sqlx::query("INSERT INTO space_memberships (space_id, account_id) VALUES (?, ?)")
+            .bind(space_id.to_string())
+            .bind(owner_account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        sqlx::query(
+            "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(space_id.to_string())
+        .bind(owner_account_id.to_string())
+        .bind(permission_code(Permission::CollectionsWrite))
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let space = fetch_space(&mut *transaction, space_id).await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        Ok(space)
+    }
+
+    /// Loads a space by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] with `SpaceNotFound`, or a storage error.
+    pub async fn space(&self, space_id: Uuid) -> Result<Space, DatabaseError> {
+        fetch_space(&self.pool, space_id).await
+    }
+
+    /// Loads a space membership together with the account's explicit grants.
+    ///
+    /// Returns `Ok(None)` when the account is not a member. The caller must treat a missing
+    /// membership as a refusal, never as an empty set of permissions that a default could fill.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError`] when the query fails.
+    pub async fn membership(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+    ) -> Result<Option<Membership>, DatabaseError> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM space_memberships WHERE space_id = ? AND account_id = ?",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        if exists == 0 {
+            return Ok(None);
+        }
+
+        let rows = sqlx::query(
+            "SELECT permission_code FROM space_permission_grants \
+             WHERE space_id = ? AND account_id = ? ORDER BY permission_code",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        // `permission_code` uses the ascii_bin collation, which MySQL reports as VARBINARY.
+        let permissions = rows
+            .iter()
+            .map(|row| {
+                let raw: Vec<u8> = row
+                    .try_get("permission_code")
+                    .map_err(DatabaseError::Query)?;
+                let code = String::from_utf8(raw)
+                    .map_err(|_| DatabaseError::Space(SpaceError::PermissionNotSpaceScoped))?;
+                permission_from_code(&code)
+                    .ok_or(DatabaseError::Space(SpaceError::PermissionNotSpaceScoped))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Some(Membership {
+            space_id,
+            account_id,
+            permissions: permissions.into_iter().collect(),
+        }))
+    }
+
+    /// Adds an account to a space with an explicit set of space-scoped grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] for an unknown account or space, an already existing
+    /// membership, a grant that is not space-scoped, or an invalid name.
+    pub async fn add_member(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+        permissions: &[Permission],
+    ) -> Result<Membership, DatabaseError> {
+        validate_grants(permissions)?;
+
+        if self.space(space_id).await.is_err() {
+            return Err(DatabaseError::Space(SpaceError::SpaceNotFound));
+        }
+
+        let account_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE id = ?")
+            .bind(account_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        if account_exists == 0 {
+            return Err(DatabaseError::Space(SpaceError::AccountNotFound));
+        }
+
+        let already_member: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM space_memberships WHERE space_id = ? AND account_id = ?",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        if already_member > 0 {
+            return Err(DatabaseError::Space(SpaceError::AlreadyMember));
+        }
+
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        sqlx::query("INSERT INTO space_memberships (space_id, account_id) VALUES (?, ?)")
+            .bind(space_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        for permission in permissions {
+            sqlx::query(
+                "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(space_id.to_string())
+            .bind(account_id.to_string())
+            .bind(permission_code(*permission))
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+        }
+
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        self.membership(space_id, account_id)
+            .await?
+            .ok_or(DatabaseError::Space(SpaceError::NotMember))
+    }
+
+    /// Replaces the grants of an existing member.
+    ///
+    /// The actor cannot change its own grants, otherwise it could widen its own access. The
+    /// owner keeps its membership and is only re-granted: removing the owner would leave a
+    /// space with an owner who is not a member.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] for a missing membership, non-space-scoped grants,
+    /// or an actor trying to change its own grants.
+    pub async fn set_member_permissions(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+        permissions: &[Permission],
+        actor_account_id: Uuid,
+    ) -> Result<Membership, DatabaseError> {
+        validate_grants(permissions)?;
+
+        if account_id == actor_account_id {
+            return Err(DatabaseError::Space(SpaceError::CannotChangeOwnGrants));
+        }
+
+        if self.membership(space_id, account_id).await?.is_none() {
+            return Err(DatabaseError::Space(SpaceError::NotMember));
+        }
+
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        sqlx::query("DELETE FROM space_permission_grants WHERE space_id = ? AND account_id = ?")
+            .bind(space_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        for permission in permissions {
+            sqlx::query(
+                "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(space_id.to_string())
+            .bind(account_id.to_string())
+            .bind(permission_code(*permission))
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+        }
+
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        self.membership(space_id, account_id)
+            .await?
+            .ok_or(DatabaseError::Space(SpaceError::NotMember))
+    }
+
+    /// Removes a member from a space, deleting its grants with the membership.
+    ///
+    /// The current owner cannot be removed: a space must always have exactly one owner, and
+    /// ownership transfer is a separate, audited operation that does not exist yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] for a missing membership, an attempt to remove the
+    /// owner, or an actor trying to change its own grants.
+    pub async fn remove_member(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+        actor_account_id: Uuid,
+    ) -> Result<bool, DatabaseError> {
+        if account_id == actor_account_id {
+            return Err(DatabaseError::Space(SpaceError::CannotChangeOwnGrants));
+        }
+
+        let space = self.space(space_id).await?;
+        if space.owner_account_id == account_id {
+            return Err(DatabaseError::Space(SpaceError::OwnerCannotBeRemoved));
+        }
+
+        if self.membership(space_id, account_id).await?.is_none() {
+            return Err(DatabaseError::Space(SpaceError::NotMember));
+        }
+
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        sqlx::query("DELETE FROM space_permission_grants WHERE space_id = ? AND account_id = ?")
+            .bind(space_id.to_string())
+            .bind(account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        let removed =
+            sqlx::query("DELETE FROM space_memberships WHERE space_id = ? AND account_id = ?")
+                .bind(space_id.to_string())
+                .bind(account_id.to_string())
+                .execute(&mut *transaction)
+                .await
+                .map_err(DatabaseError::Query)?
+                .rows_affected()
+                == 1;
+
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        Ok(removed)
+    }
+
+    /// Lists the members of a space with their grants, for the sharing screen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError`] when the query fails.
+    pub async fn space_members(&self, space_id: Uuid) -> Result<Vec<Membership>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT account_id FROM space_memberships WHERE space_id = ? ORDER BY account_id",
+        )
+        .bind(space_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let mut members = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let account_id = parse_uuid(&decode_text(row, "account_id")?)?;
+            if let Some(membership) = self.membership(space_id, account_id).await? {
+                members.push(membership);
+            }
+        }
+
+        Ok(members)
+    }
 }
 
+/// Maximum length of a space name, aligned with the `VARCHAR(255)` column.
+pub const MAX_SPACE_NAME_CHARS: usize = 255;
+
+/// Maps a permission to the code stored in `space_permission_grants`.
+///
+/// The codes are the schema's `CHECK` list, so a value that is not space-scoped has no code
+/// and must never reach the table.
+const fn permission_code(permission: Permission) -> &'static str {
+    match permission {
+        Permission::CollectionsRead => "collections_read",
+        Permission::CollectionsWrite => "collections_write",
+        Permission::AcquisitionsRead => "acquisitions_read",
+        Permission::AcquisitionsWrite => "acquisitions_write",
+        Permission::FinanceRead => "finance_read",
+        Permission::FinanceWrite => "finance_write",
+        Permission::DocumentsRead => "documents_read",
+        Permission::DocumentsWrite => "documents_write",
+        // Non-space permissions have no stored code; callers are rejected before reaching here.
+        _ => "",
+    }
+}
+
+fn permission_from_code(code: &str) -> Option<Permission> {
+    match code {
+        "collections_read" => Some(Permission::CollectionsRead),
+        "collections_write" => Some(Permission::CollectionsWrite),
+        "acquisitions_read" => Some(Permission::AcquisitionsRead),
+        "acquisitions_write" => Some(Permission::AcquisitionsWrite),
+        "finance_read" => Some(Permission::FinanceRead),
+        "finance_write" => Some(Permission::FinanceWrite),
+        "documents_read" => Some(Permission::DocumentsRead),
+        "documents_write" => Some(Permission::DocumentsWrite),
+        _ => None,
+    }
+}
+
+/// Parses a text identifier, reporting a missing row rather than a malformed UUID.
+fn parse_uuid(value: &str) -> Result<Uuid, DatabaseError> {
+    Uuid::parse_str(value).map_err(|_| DatabaseError::Space(SpaceError::SpaceNotFound))
+}
+
+fn validate_grants(permissions: &[Permission]) -> Result<(), DatabaseError> {
+    for permission in permissions {
+        if !permission.is_space_scoped() {
+            return Err(DatabaseError::Space(SpaceError::PermissionNotSpaceScoped));
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_space<'e, E>(executor: E, space_id: Uuid) -> Result<Space, DatabaseError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::MySql>,
+{
+    let row = sqlx::query("SELECT id, name, owner_account_id, created_at FROM spaces WHERE id = ?")
+        .bind(space_id.to_string())
+        .fetch_optional(executor)
+        .await
+        .map_err(DatabaseError::Query)?
+        .ok_or(DatabaseError::Space(SpaceError::SpaceNotFound))?;
+
+    Ok(Space {
+        id: parse_uuid(&decode_text(&row, "id")?)?,
+        name: row.try_get("name").map_err(DatabaseError::Query)?,
+        owner_account_id: parse_uuid(&decode_text(&row, "owner_account_id")?)?,
+        created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
+    })
+}
 /// Maximum length of an item name, aligned with the `VARCHAR(255)` column.
 pub const MAX_ITEM_NAME_CHARS: usize = 255;
 
-async fn fetch_item<'e, E>(executor: E, item_id: &str) -> Result<Item, DatabaseError>
+async fn fetch_item<'e, E>(executor: E, item_id: Uuid) -> Result<Item, DatabaseError>
 where
     E: sqlx::Executor<'e, Database = sqlx::MySql>,
 {
@@ -648,21 +1132,21 @@ where
         "SELECT id, space_id, inventory_number, name, revision, created_by_account_id, created_at \
          FROM inventory_items WHERE id = ?",
     )
-    .bind(item_id)
+    .bind(item_id.to_string())
     .fetch_optional(executor)
     .await
     .map_err(DatabaseError::Query)?
     .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
 
     Ok(Item {
-        id: decode_text(&row, "id")?,
-        space_id: decode_text(&row, "space_id")?,
+        id: parse_uuid(&decode_text(&row, "id")?)?,
+        space_id: parse_uuid(&decode_text(&row, "space_id")?)?,
         inventory_number: row
             .try_get("inventory_number")
             .map_err(DatabaseError::Query)?,
         name: row.try_get("name").map_err(DatabaseError::Query)?,
         revision: row.try_get("revision").map_err(DatabaseError::Query)?,
-        created_by_account_id: decode_text(&row, "created_by_account_id")?,
+        created_by_account_id: parse_uuid(&decode_text(&row, "created_by_account_id")?)?,
         created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
     })
 }
@@ -690,10 +1174,10 @@ where
 
 fn decode_transfer(row: &sqlx::mysql::MySqlRow) -> Result<ItemTransfer, DatabaseError> {
     Ok(ItemTransfer {
-        id: decode_text(row, "id")?,
-        item_id: decode_text(row, "item_id")?,
-        source_space_id: decode_text(row, "source_space_id")?,
-        destination_space_id: decode_text(row, "destination_space_id")?,
+        id: parse_uuid(&decode_text(row, "id")?)?,
+        item_id: parse_uuid(&decode_text(row, "item_id")?)?,
+        source_space_id: parse_uuid(&decode_text(row, "source_space_id")?)?,
+        destination_space_id: parse_uuid(&decode_text(row, "destination_space_id")?)?,
         source_inventory_number: row
             .try_get("source_inventory_number")
             .map_err(DatabaseError::Query)?,
@@ -726,6 +1210,7 @@ fn decode_text(row: &sqlx::mysql::MySqlRow, column: &str) -> Result<String, Data
 pub enum DatabaseError {
     Connection(sqlx::Error),
     Inventory(InventoryError),
+    Space(SpaceError),
     Migration(sqlx::migrate::MigrateError),
     Query(sqlx::Error),
     Password(crate::credentials::PasswordError),
@@ -735,6 +1220,15 @@ pub enum DatabaseError {
 }
 
 impl DatabaseError {
+    /// Returns the space rejection reason, when this error is one.
+    #[must_use]
+    pub const fn space_error(&self) -> Option<SpaceError> {
+        match self {
+            Self::Space(error) => Some(*error),
+            _ => None,
+        }
+    }
+
     /// Returns the inventory rejection reason, when this error is one.
     #[must_use]
     pub const fn inventory_error(&self) -> Option<InventoryError> {
@@ -770,6 +1264,7 @@ impl fmt::Display for DatabaseError {
             Self::InvalidCredentials => formatter.write_str("invalid credentials"),
             Self::Session(_) => formatter.write_str("session rejected"),
             Self::Inventory(error) => write!(formatter, "inventory rejected: {error:?}"),
+            Self::Space(error) => write!(formatter, "space rejected: {error:?}"),
         }
     }
 }
@@ -783,7 +1278,8 @@ impl Error for DatabaseError {
             Self::TokenGeneration
             | Self::InvalidCredentials
             | Self::Session(_)
-            | Self::Inventory(_) => None,
+            | Self::Inventory(_)
+            | Self::Space(_) => None,
         }
     }
 }

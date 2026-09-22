@@ -13,7 +13,8 @@ pub use credentials::{
 };
 pub use database::{
     AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item,
-    ItemTransfer, MAX_ITEM_NAME_CHARS, SessionError, SessionRecord, TransferOutcome,
+    ItemTransfer, MAX_ITEM_NAME_CHARS, MAX_SPACE_NAME_CHARS, Membership, SessionError,
+    SessionRecord, Space, SpaceError, TransferOutcome,
 };
 pub use http::{API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database};
 pub use security::{
