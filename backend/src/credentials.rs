@@ -16,6 +16,9 @@ const ARGON2_OUTPUT_BYTES: usize = 32;
 const SESSION_TOKEN_BYTES: usize = 32;
 const INVITATION_TOKEN_BYTES: usize = 32;
 const MAX_PASSWORD_BYTES: usize = 1024;
+pub const MAX_EMAIL_BYTES: usize = 320;
+const MAX_EMAIL_LOCAL_BYTES: usize = 64;
+const MAX_EMAIL_DOMAIN_BYTES: usize = 255;
 
 pub struct PasswordService {
     argon2: Argon2<'static>,
@@ -278,6 +281,116 @@ impl fmt::Debug for InvitationTokenFingerprint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("InvitationTokenFingerprint([REDACTED])")
     }
+}
+
+/// A normalised account e-mail address.
+///
+/// Normalisation is deliberately conservative: it trims the input and lowercases the domain,
+/// but it does not remove dots or `+tags` from the local part, because those are provider
+/// specific. The comparison policy for invitations and for the future login route still has
+/// to be decided, so this type must not be used as the uniqueness rule on its own.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EmailAddress(String);
+
+impl EmailAddress {
+    /// Parses and normalises an e-mail address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmailAddressError`] when the value is empty, exceeds the RFC 5321 length
+    /// limits, lacks exactly one non-empty local and domain part, or contains whitespace,
+    /// control characters, or more than one `@`.
+    pub fn parse(value: &str) -> Result<Self, EmailAddressError> {
+        let trimmed = value.trim();
+
+        if trimmed.is_empty() {
+            return Err(EmailAddressError::Empty);
+        }
+        if trimmed.len() > MAX_EMAIL_BYTES {
+            return Err(EmailAddressError::TooLong);
+        }
+        if trimmed.chars().any(char::is_whitespace) {
+            return Err(EmailAddressError::Whitespace);
+        }
+        if trimmed.chars().any(char::is_control) {
+            return Err(EmailAddressError::ControlCharacter);
+        }
+
+        let mut parts = trimmed.split('@');
+        let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(EmailAddressError::NotExactlyOneAtSign);
+        };
+
+        if local.is_empty() || domain.is_empty() {
+            return Err(EmailAddressError::MissingPart);
+        }
+        if local.len() > MAX_EMAIL_LOCAL_BYTES || domain.len() > MAX_EMAIL_DOMAIN_BYTES {
+            return Err(EmailAddressError::TooLong);
+        }
+        if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
+            return Err(EmailAddressError::InvalidDomain);
+        }
+
+        Ok(Self(format!("{local}@{}", domain.to_lowercase())))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for EmailAddress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for EmailAddress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EmailAddress([REDACTED])")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailAddressError {
+    Empty,
+    TooLong,
+    Whitespace,
+    ControlCharacter,
+    NotExactlyOneAtSign,
+    MissingPart,
+    InvalidDomain,
+}
+
+impl fmt::Display for EmailAddressError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::Empty => "e-mail address must not be empty",
+            Self::TooLong => "e-mail address exceeds the RFC 5321 length limit",
+            Self::Whitespace => "e-mail address must not contain whitespace",
+            Self::ControlCharacter => "e-mail address must not contain control characters",
+            Self::NotExactlyOneAtSign => "e-mail address must contain exactly one @",
+            Self::MissingPart => "e-mail address must have a non-empty local part and domain",
+            Self::InvalidDomain => "e-mail address domain must be a dotted name",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for EmailAddressError {}
+
+/// Validates a password supplied once at installation.
+///
+/// The functional password policy (minimum length, compromised-password lists, rotation) is
+/// still an open decision in ADR-0003, so this only enforces the defensive input limit shared
+/// with [`PasswordService::hash_password`].
+///
+/// # Errors
+///
+/// Returns [`PasswordError::EmptyPassword`] or [`PasswordError::PasswordTooLong`].
+pub fn validate_bootstrap_password(password: &str) -> Result<(), PasswordError> {
+    validate_password_input(password)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
