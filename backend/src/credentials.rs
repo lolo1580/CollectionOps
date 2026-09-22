@@ -6,8 +6,10 @@ use argon2::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand_core::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use utoipa::ToSchema;
 
 const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
 const ARGON2_ITERATIONS: u32 = 3;
@@ -393,6 +395,77 @@ pub fn validate_bootstrap_password(password: &str) -> Result<(), PasswordError> 
     validate_password_input(password)
 }
 
+/// How long a client may stay idle before its session stops being refreshed.
+///
+/// The client picks one of these values in its settings. It is a comfort setting, so it is
+/// deliberately independent from [`SessionLifetime`]: choosing a longer idle delay never
+/// extends how long the token itself stays valid.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleTimeout {
+    Minutes15,
+    #[default]
+    Minutes30,
+    Hour1,
+    Never,
+}
+
+impl IdleTimeout {
+    /// Returns the idle delay in seconds, or `None` when the client never locks itself.
+    #[must_use]
+    pub const fn seconds(self) -> Option<u32> {
+        match self {
+            Self::Minutes15 => Some(15 * 60),
+            Self::Minutes30 => Some(30 * 60),
+            Self::Hour1 => Some(60 * 60),
+            Self::Never => None,
+        }
+    }
+
+    /// Reads back the value stored with a session.
+    ///
+    /// The ceiling is stored as the full maximum instead of a sentinel, so a stored value
+    /// equal to the ceiling means `Never`.
+    #[must_use]
+    pub const fn from_stored_seconds(seconds: u32) -> Self {
+        match seconds {
+            SessionLifetime::MAX_SECONDS => Self::Never,
+            900 => Self::Minutes15,
+            3600 => Self::Hour1,
+            _ => Self::Minutes30,
+        }
+    }
+
+    /// Returns the value stored with the session, always bounded by the seven-day ceiling.
+    ///
+    /// `Never` is stored as the full ceiling so that the column stays a single bounded
+    /// number instead of a nullable special case: the token lifetime is capped either way.
+    #[must_use]
+    pub const fn stored_seconds(self) -> u32 {
+        match self.seconds() {
+            Some(seconds) => seconds,
+            None => SessionLifetime::MAX_SECONDS,
+        }
+    }
+}
+
+/// Server-side limits on how long a session token stays valid.
+///
+/// These are not client preferences. The menu in the Windows client only chooses an idle
+/// delay; the ceiling below always applies, so a stolen token cannot live forever.
+pub struct SessionLifetime;
+
+impl SessionLifetime {
+    /// Hard ceiling for any session, whatever the client requested.
+    pub const MAX_SECONDS: u32 = 7 * 24 * 60 * 60;
+
+    /// Lifetime used when the client does not ask to stay signed in.
+    pub const DEFAULT_SECONDS: u32 = 12 * 60 * 60;
+
+    /// Lifetime used when the client asks to stay signed in.
+    pub const PERSISTENT_SECONDS: u32 = Self::MAX_SECONDS;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvitationTokenError {
     InvalidFormat,
@@ -413,7 +486,10 @@ impl Error for InvitationTokenError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{InvitationToken, PasswordHashValue, PasswordService, SessionToken};
+    use super::{
+        IdleTimeout, InvitationToken, PasswordHashValue, PasswordService, SessionLifetime,
+        SessionToken,
+    };
 
     #[test]
     fn password_hash_uses_argon2id_and_verifies_only_the_original_password() {
@@ -459,6 +535,49 @@ mod tests {
 
         assert!(fingerprint.matches(&token));
         assert!(!fingerprint.matches(&other));
+    }
+
+    #[test]
+    fn idle_timeout_round_trips_through_its_stored_value() {
+        for timeout in [
+            IdleTimeout::Minutes15,
+            IdleTimeout::Minutes30,
+            IdleTimeout::Hour1,
+            IdleTimeout::Never,
+        ] {
+            assert_eq!(
+                IdleTimeout::from_stored_seconds(timeout.stored_seconds()),
+                timeout,
+                "{timeout:?} must survive a round trip"
+            );
+        }
+
+        assert_eq!(IdleTimeout::Minutes15.seconds(), Some(900));
+        assert_eq!(IdleTimeout::Minutes30.seconds(), Some(1800));
+        assert_eq!(IdleTimeout::Hour1.seconds(), Some(3600));
+        assert_eq!(IdleTimeout::Never.seconds(), None);
+        assert_eq!(IdleTimeout::default(), IdleTimeout::Minutes30);
+    }
+
+    #[test]
+    fn a_stored_idle_timeout_never_exceeds_the_session_ceiling() {
+        for timeout in [
+            IdleTimeout::Minutes15,
+            IdleTimeout::Minutes30,
+            IdleTimeout::Hour1,
+            IdleTimeout::Never,
+        ] {
+            assert!(
+                timeout.stored_seconds() <= SessionLifetime::MAX_SECONDS,
+                "{timeout:?} must stay within the seven-day ceiling"
+            );
+        }
+
+        assert_eq!(SessionLifetime::MAX_SECONDS, 604_800);
+        assert_eq!(
+            SessionLifetime::PERSISTENT_SECONDS,
+            SessionLifetime::MAX_SECONDS
+        );
     }
 
     #[test]
