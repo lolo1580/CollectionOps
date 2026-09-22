@@ -9,11 +9,11 @@
                 MaxWidth="720"
                 HorizontalAlignment="Left"
                 Style="{StaticResource BodyLargeTextBlockStyle}"
-                Text="Le socle du client Windows est prêt. Les tableaux de bord seront construits à partir des exigences validées." />
+                Text="Le client Windows prend désormais en charge la connexion et la gestion des sessions. Les tableaux de bord métier seront construits à partir des exigences validées." />
             <InfoBar
                 IsClosable="False"
                 IsOpen="True"
-                Message="Aucune connexion au backend ou base locale n’est encore configurée."
+                Message="Ouvrez Compte pour connecter le client au serveur. Le stockage local hors ligne reste à concevoir."
                 Severity="Informational"
                 Title="Phase initiale" />
         </StackPanel>

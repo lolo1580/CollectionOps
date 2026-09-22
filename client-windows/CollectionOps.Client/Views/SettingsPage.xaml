@@ -1,0 +1,25 @@
+<Page
+    x:Class="CollectionOps.Client.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <StackPanel Padding="32" Spacing="16" MaxWidth="760" HorizontalAlignment="Left">
+            <TextBlock Text="Paramètres" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock Text="Réglez la connexion et l'apparence de cette fenêtre." TextWrapping="Wrap" />
+            <InfoBar x:Name="StatusBar" IsOpen="False" IsClosable="True" />
+
+            <TextBlock Text="Connexion au serveur" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBox x:Name="ServerAddress" Header="Adresse du serveur" PlaceholderText="https://collectionops.exemple.org" />
+            <Button x:Name="CheckServerButton" Content="Enregistrer et tester" Click="OnCheckServer" Style="{StaticResource AccentButtonStyle}" />
+            <TextBlock Text="HTTPS est requis pour un serveur distant. Enregistrer une autre adresse déconnecte ce client du serveur précédent." TextWrapping="Wrap" Opacity="0.7" />
+
+            <TextBlock Text="Apparence" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <ComboBox x:Name="ThemeChoice" Header="Thème" Width="260" SelectedIndex="0" SelectionChanged="OnThemeChanged">
+                <ComboBoxItem Content="Utiliser le thème Windows" />
+                <ComboBoxItem Content="Clair" />
+                <ComboBoxItem Content="Sombre" />
+            </ComboBox>
+            <TextBlock Text="Le thème et l'adresse du serveur restent en mémoire jusqu'à la fermeture du client." TextWrapping="Wrap" Opacity="0.7" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

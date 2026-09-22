@@ -7,7 +7,7 @@ CollectionOps est un ERP de gestion de collections personnelles et partagées. L
 Le projet entre dans sa phase de développement. Le socle initial contient :
 
 - une API Rust/Axum avec contrôle de santé et contrat OpenAPI ;
-- une coquille de client Windows .NET 10/WinUI 3 ;
+- un client Windows .NET 10/WinUI 3 avec navigation et gestion des sessions ;
 - la documentation de la décision technologique et de l’architecture ;
 - des tests backend initiaux ;
 - un [journal des modifications](CHANGELOG.md) maintenu à partir du premier changement.
@@ -106,7 +106,13 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Le client est actuellement une coquille de navigation sans connexion réseau ni stockage local.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur, tester la connexion et choisir le thème. Dans **Compte**, se connecter avec un compte existant, consulter les sessions ou révoquer un appareil. L'API de session nécessite `COLLECTIONOPS_DATABASE_URL` côté serveur. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage du client. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Les modules de collection et le mode hors ligne ne sont pas encore reliés à l'API.
+
+Depuis PowerShell, dans la racine du dépôt :
+
+```powershell
+dotnet run --project .\client-windows\CollectionOps.Client\CollectionOps.Client.csproj -p:Platform=x64
+```
 
 ## Qualité
 

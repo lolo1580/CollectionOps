@@ -6,6 +6,8 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Client Windows : page Compte avec configuration de l'adresse du serveur, vérification de santé, connexion, liste et révocation des sessions. Le jeton est conservé uniquement en mémoire et n'est envoyé qu'au serveur configuré.
+- Page Paramètres du client Windows : libellé de navigation en français, configuration et test de l'adresse du serveur, choix temporaire du thème Windows, clair ou sombre.
 - Création d'espace établissant dans une même transaction l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire.
 - Adhésions avec droits explicites : ajout d'un membre, remplacement de ses droits, retrait et liste des membres.
 - Refus d'une permission globale comme droit d'espace, d'un membre déjà présent, d'un membre qui modifierait ses propres droits et du retrait du propriétaire courant.
