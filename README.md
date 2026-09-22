@@ -70,6 +70,16 @@ Les primitives locales utilisent Argon2id pour les mots de passe et des jetons d
 
 Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
 
+## Espaces, adhésions et autorisation
+
+Créer un espace établit ensemble l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire, qui reçoit `collections_write`. La propriété n'accorde **aucun** droit financier, et aucune permission globale ne peut être enregistrée comme droit d'espace.
+
+Chaque opération sur un espace doit vérifier deux choses : une permission applicative portée par l'identité, et un droit explicite dans cet espace, chargé depuis la base. Un identifiant d'espace connu ne suffit jamais. Les droits sont relus à chaque opération, donc un droit retiré cesse immédiatement d'agir, même si le client le croit encore valide.
+
+Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré de son espace : le transfert de propriété sera une opération distincte et auditée.
+
+Ces opérations sont implémentées et testées dans la couche de persistance. Les routes HTTP correspondantes restent à écrire.
+
 ## Attribution des numéros d'inventaire
 
 Chaque espace possède une ligne de compteur (`inventory_counters`) initialisée à `1`. Le serveur attribue le numéro, jamais le client : la transaction verrouille la ligne du compteur, lit la valeur, l'incrémente et crée l'objet. Un échec annule aussi la réservation, donc un numéro n'est jamais gaspillé par une tentative refusée. L'unicité `(space_id, inventory_number)` reste une seconde ligne de défense.

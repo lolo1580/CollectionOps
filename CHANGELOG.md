@@ -6,6 +6,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Création d'espace établissant dans une même transaction l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire.
+- Adhésions avec droits explicites : ajout d'un membre, remplacement de ses droits, retrait et liste des membres.
+- Refus d'une permission globale comme droit d'espace, d'un membre déjà présent, d'un membre qui modifierait ses propres droits et du retrait du propriétaire courant.
+- Le propriétaire d'un espace ne reçoit aucun droit financier : la propriété n'implique que l'écriture de collection.
+- Tests d'extrémité du contrôle d'autorisation par espace, avec adhésion chargée depuis la base, y compris le cas d'un identifiant d'espace connu par un non-membre.
 - Création d'objet avec attribution du numéro d'inventaire dans une transaction verrouillant le compteur de l'espace, et refus d'un nom vide ou dépassant 255 caractères.
 - Transfert d'objet renuméroté dans l'espace de destination, avec conservation de l'ancien et du nouveau numéro dans l'historique et augmentation de la révision.
 - Refus d'un transfert dont la révision est obsolète, d'une destination identique à la source et d'une destination sans compteur, sans modifier l'objet ni consommer de numéro.
@@ -60,6 +65,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - ADR définissant les règles de protection des identifiants locaux et secrets de session.
 
 ### Sécurité
+
+- Aucune permission globale ne peut être enregistrée comme droit d'espace ; les tentatives sont refusées avant écriture.
+- Un membre ne peut pas élargir ses propres droits, et le propriétaire ne peut pas être retiré de son espace.
+- Les droits d'espace sont relus depuis la base à chaque opération, de sorte qu'un droit retiré cesse d'agir immédiatement.
 
 - Le jeton de session circule dans un en-tête dédié, jamais dans un cookie ni une URL, pour ne pas fuiter par `Referer` ou par l'historique.
 - La connexion ne révèle pas si une adresse existe : mot de passe faux et compte inconnu produisent la même réponse.

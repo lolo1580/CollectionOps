@@ -44,9 +44,13 @@ Le `Principal` actuel expose des permissions effectives sans contexte d'espace. 
 | Transférer un objet | Droit d'écriture sur la source et la destination ; décision du propriétaire à préciser. |
 | Voir ou modifier des montants | Permission financière explicite pour l'espace concerné. |
 | Inviter, révoquer ou réémettre une invitation | Être le propriétaire courant de l'espace. |
-| Retirer un membre ou modifier ses droits | Règle à préciser avant les routes correspondantes. |
+| Retirer un membre ou modifier ses droits | Être le propriétaire courant de l'espace. Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré. |
 
 La forme du jeton et le contenu du `Principal` ne doivent pas être utilisés comme source unique des adhésions : leur révocation et leurs changements doivent prendre effet selon une politique de session validée.
+
+**État : implémenté et couvert par des tests.** `create_space`, `membership`, `add_member`, `set_member_permissions`, `remove_member` et `space_members` existent, et les tests appellent réellement `require_space_permission` après avoir chargé l'adhésion depuis la base. Aucune route HTTP correspondante n'est encore exposée.
+
+La création d'un espace établit ensemble l'espace, la ligne de compteur et l'adhésion du propriétaire avec `collections_write`. Le propriétaire ne reçoit **aucun** droit financier : la propriété n'implique rien au-delà de l'écriture de collection, et aucune permission globale ne peut être stockée comme droit d'espace.
 
 ## Questions bloquant le schéma physique et les contrats API
 
