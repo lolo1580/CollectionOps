@@ -155,6 +155,27 @@ impl SessionToken {
         Ok(Self(URL_SAFE_NO_PAD.encode(bytes)))
     }
 
+    /// Parses a token presented by a client.
+    ///
+    /// Only the canonical 256-bit Base64 URL form is accepted, so a truncated, padded, or
+    /// otherwise altered value is rejected before any lookup happens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionTokenError::InvalidFormat`] when the value is not canonical.
+    pub fn parse(value: impl Into<String>) -> Result<Self, SessionTokenError> {
+        let value = value.into();
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&value)
+            .map_err(|_| SessionTokenError::InvalidFormat)?;
+
+        if bytes.len() == SESSION_TOKEN_BYTES && URL_SAFE_NO_PAD.encode(bytes) == value {
+            Ok(Self(value))
+        } else {
+            Err(SessionTokenError::InvalidFormat)
+        }
+    }
+
     /// Exposes the bearer secret for transport to the authenticated client.
     ///
     /// Callers must not log, persist, or include this value in diagnostics.
@@ -199,6 +220,7 @@ impl fmt::Debug for SessionTokenFingerprint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTokenError {
+    InvalidFormat,
     RandomSourceUnavailable,
 }
 
@@ -401,12 +423,19 @@ pub fn validate_bootstrap_password(password: &str) -> Result<(), PasswordError> 
 /// deliberately independent from [`SessionLifetime`]: choosing a longer idle delay never
 /// extends how long the token itself stays valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
 pub enum IdleTimeout {
+    /// Locks after 15 minutes without activity.
+    #[serde(rename = "minutes_15")]
     Minutes15,
+    /// Locks after 30 minutes without activity. This is the default.
     #[default]
+    #[serde(rename = "minutes_30")]
     Minutes30,
+    /// Locks after one hour without activity.
+    #[serde(rename = "hour_1")]
     Hour1,
+    /// Never locks itself. The token still expires after seven days.
+    #[serde(rename = "never")]
     Never,
 }
 

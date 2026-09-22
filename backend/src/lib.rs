@@ -13,7 +13,7 @@ pub use credentials::{
 pub use database::{
     AuthenticatedSession, Database, DatabaseError, IssuedSession, SessionError, SessionRecord,
 };
-pub use http::{API_PREFIX, REQUEST_ID_HEADER, app};
+pub use http::{API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database};
 pub use security::{
     AuthorizationError, Permission, Principal, SpaceAuthorizationError, SpaceMembership,
     SpaceOwnership,

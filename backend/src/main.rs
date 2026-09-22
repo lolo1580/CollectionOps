@@ -3,7 +3,7 @@ use std::error::Error;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-use collectionops_backend::{AppConfig, Database, PasswordService};
+use collectionops_backend::{AppConfig, Database, PasswordService, app, app_with_database};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Persistence is optional at this stage, but a configured database is a hard startup
     // requirement: starting without it would advertise readiness the service cannot honour.
-    if let Some(database_url) = config.database_url() {
+    let router = if let Some(database_url) = config.database_url() {
         let database = Database::connect_and_migrate(database_url).await?;
         info!("MariaDB connection established and migrations applied");
 
@@ -35,15 +35,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } else {
             warn!("no bootstrap administrator configured");
         }
+
+        app_with_database(database)
     } else {
         warn!("COLLECTIONOPS_DATABASE_URL is not set: starting without persistence");
-    }
+        app()
+    };
 
     let address = config.bind_address();
     let listener = TcpListener::bind(address).await?;
 
     info!(%address, "CollectionOps backend listening");
-    axum::serve(listener, collectionops_backend::app())
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
