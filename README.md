@@ -13,7 +13,7 @@ Le projet entre dans sa phase de développement. Le socle initial contient :
 - un [journal des modifications](CHANGELOG.md) maintenu à partir du premier changement.
 - une intégration continue séparée pour le backend Linux et le client Windows.
 
-Aucune base de données, infrastructure distante ou intégration S3 n’est créée à ce stade. Une première migration MariaDB est versionnée et peut être appliquée par le composant SQLx du backend ; elle n'est pas encore lancée au démarrage du service.
+Aucune infrastructure distante ni intégration S3 n’est créée à ce stade. Deux migrations MariaDB sont versionnées et appliquées au démarrage par le composant SQLx, mais uniquement lorsque `COLLECTIONOPS_DATABASE_URL` est défini.
 
 ## Architecture retenue
 
@@ -86,7 +86,21 @@ cargo test --workspace --all-features
 
 Les consignes détaillées figurent dans [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Le test de migration peut être exécuté sur une base MariaDB de test dédiée avec `COLLECTIONOPS_TEST_DATABASE_URL=mysql://... cargo test -p collectionops-backend --test database`. Le service n'utilise pas encore cette base au démarrage.
+Le test de migration et de provisionnement peut être exécuté sur une base MariaDB de test dédiée avec `COLLECTIONOPS_TEST_DATABASE_URL=mysql://... cargo test -p collectionops-backend --test database`. Sans cette variable, ces tests sont ignorés.
+
+## Configuration
+
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `COLLECTIONOPS_BIND` | Adresse d'écoute HTTP | `127.0.0.1:8080` |
+| `COLLECTIONOPS_DATABASE_URL` | URL MariaDB ; active la persistance | aucune |
+| `COLLECTIONOPS_BOOTSTRAP_ADMIN_EMAIL` | Adresse du premier administrateur | aucune |
+| `COLLECTIONOPS_BOOTSTRAP_ADMIN_PASSWORD` | Mot de passe du premier administrateur | aucune |
+| `COLLECTIONOPS_BOOTSTRAP_ADMIN_NAME` | Nom affiché du premier administrateur | adresse e-mail |
+
+Sans `COLLECTIONOPS_DATABASE_URL`, le service démarre sans persistance et n'ouvre aucune connexion. Dès qu'elle est définie, la connexion devient obligatoire : si MariaDB est injoignable ou si une migration échoue, le backend refuse de démarrer. Les migrations sont appliquées au démarrage, ce que suppose une seule instance pour l'instant.
+
+Le premier administrateur n'est créé que si aucun compte ne porte déjà le drapeau d'administration ; l'opération est donc idempotente et peut rester dans la configuration. Les deux variables `EMAIL` et `PASSWORD` vont de pair : n'en définir qu'une seule fait échouer le démarrage. Le mot de passe est haché avec Argon2id avant d'atteindre MariaDB et n'apparaît ni en base ni dans les journaux. Le compte est marqué comme vérifié, puisqu'il est créé par l'exploitant.
 
 GitHub Actions exécute automatiquement ces contrôles pour le backend. Un second workflow restaure et compile le client WinUI 3 sur un runner Windows x64. Aucun workflow ne déploie l’application.
 

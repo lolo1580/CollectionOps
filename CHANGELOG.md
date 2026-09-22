@@ -6,6 +6,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Deuxième migration MariaDB ajoutant l'adresse e-mail, l'empreinte Argon2id du mot de passe et l'horodatage de vérification aux comptes.
+- Provisionnement idempotent du premier administrateur à partir de `COLLECTIONOPS_BOOTSTRAP_ADMIN_EMAIL` et `COLLECTIONOPS_BOOTSTRAP_ADMIN_PASSWORD`, avec refus d'une configuration partielle.
+- Connexion MariaDB et application des migrations au démarrage lorsque `COLLECTIONOPS_DATABASE_URL` est défini, avec refus de démarrer si la base est injoignable.
+- Type `EmailAddress` normalisant l'adresse pour le domaine, sans toucher à la partie locale, et erreurs de configuration nommant la variable fautive.
+- Tests d'intégration couvrant les colonnes d'identifiants, l'absence de colonne en clair et l'idempotence du provisionnement.
 - Brouillon du cahier des charges fonctionnel V1 avec critères d'acceptation et décisions métier à valider.
 - Modèle conceptuel du premier lot V1 pour les comptes, espaces, adhésions et objets.
 - Règle validée de numérotation séquentielle par espace et renumérotation au transfert, avec brouillon de schéma MariaDB.
@@ -39,6 +44,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - ADR définissant les règles de protection des identifiants locaux et secrets de session.
 
 ### Sécurité
+
+- Le mot de passe du premier administrateur est haché avant l'insertion et sa représentation de débogage est expurgée.
+- Aucune colonne ne peut contenir un mot de passe en clair ; les tests le vérifient sur le schéma et sur la valeur stockée.
 
 - Interdiction du code Rust non sûr au niveau du workspace.
 - Exclusion des fichiers de configuration locale et secrets du suivi Git.
