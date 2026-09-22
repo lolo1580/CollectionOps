@@ -154,7 +154,7 @@ async fn readiness() -> Json<HealthResponse> {
     path = "/api/v1/session",
     tag = "authentication",
     responses(
-        (status = 200, description = "Session active et permissions effectives", body = SessionResponse),
+        (status = 200, description = "Session active et permissions applicatives", body = SessionResponse),
         (status = 401, description = "Authentification requise", body = ProblemDetails)
     )
 )]
@@ -257,7 +257,6 @@ pub fn app() -> Router {
                 tracing::info_span!(
                     "http_request",
                     method = %request.method(),
-                    uri = %request.uri(),
                     request_id
                 )
             }),

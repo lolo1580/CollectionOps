@@ -14,6 +14,7 @@ const ARGON2_ITERATIONS: u32 = 3;
 const ARGON2_PARALLELISM: u32 = 4;
 const ARGON2_OUTPUT_BYTES: usize = 32;
 const SESSION_TOKEN_BYTES: usize = 32;
+const INVITATION_TOKEN_BYTES: usize = 32;
 const MAX_PASSWORD_BYTES: usize = 1024;
 
 pub struct PasswordService {
@@ -204,9 +205,102 @@ impl fmt::Display for SessionTokenError {
 
 impl Error for SessionTokenError {}
 
+pub struct InvitationToken(String);
+
+impl InvitationToken {
+    /// Generates a 256-bit opaque invitation token using the operating system CSPRNG.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvitationTokenError`] when the operating system random source is unavailable.
+    pub fn generate() -> Result<Self, InvitationTokenError> {
+        let mut bytes = [0_u8; INVITATION_TOKEN_BYTES];
+        OsRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|_| InvitationTokenError::RandomSourceUnavailable)?;
+        Ok(Self(URL_SAFE_NO_PAD.encode(bytes)))
+    }
+
+    /// Parses a token received from an invitation link.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvitationTokenError`] when the token is not a canonical 256-bit Base64 URL value.
+    pub fn parse(value: impl Into<String>) -> Result<Self, InvitationTokenError> {
+        let value = value.into();
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&value)
+            .map_err(|_| InvitationTokenError::InvalidFormat)?;
+
+        if bytes.len() == INVITATION_TOKEN_BYTES && URL_SAFE_NO_PAD.encode(bytes) == value {
+            Ok(Self(value))
+        } else {
+            Err(InvitationTokenError::InvalidFormat)
+        }
+    }
+
+    /// Exposes the bearer secret only for delivery to the invitee.
+    /// Callers must not log or persist this value.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> InvitationTokenFingerprint {
+        InvitationTokenFingerprint(Sha256::digest(self.0.as_bytes()).into())
+    }
+}
+
+impl fmt::Debug for InvitationToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InvitationToken([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct InvitationTokenFingerprint([u8; 32]);
+
+impl InvitationTokenFingerprint {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn matches(&self, candidate: &InvitationToken) -> bool {
+        let candidate = candidate.fingerprint();
+        bool::from(self.0.ct_eq(&candidate.0))
+    }
+}
+
+impl fmt::Debug for InvitationTokenFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InvitationTokenFingerprint([REDACTED])")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvitationTokenError {
+    InvalidFormat,
+    RandomSourceUnavailable,
+}
+
+impl fmt::Display for InvitationTokenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidFormat => "invitation token has an invalid format",
+            Self::RandomSourceUnavailable => "operating system random source is unavailable",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for InvitationTokenError {}
+
 #[cfg(test)]
 mod tests {
-    use super::{PasswordHashValue, PasswordService, SessionToken};
+    use super::{InvitationToken, PasswordHashValue, PasswordService, SessionToken};
 
     #[test]
     fn password_hash_uses_argon2id_and_verifies_only_the_original_password() {
@@ -252,5 +346,32 @@ mod tests {
 
         assert!(fingerprint.matches(&token));
         assert!(!fingerprint.matches(&other));
+    }
+
+    #[test]
+    fn invitation_token_round_trips_and_only_matches_its_own_fingerprint() {
+        let token = InvitationToken::generate().expect("CSPRNG must be available");
+        let other = InvitationToken::generate().expect("CSPRNG must be available");
+        let parsed =
+            InvitationToken::parse(token.expose_secret()).expect("generated token is valid");
+        let fingerprint = token.fingerprint();
+
+        assert_eq!(token.expose_secret().len(), 43);
+        assert!(fingerprint.matches(&parsed));
+        assert!(!fingerprint.matches(&other));
+        assert!(!format!("{token:?}").contains(token.expose_secret()));
+        assert_eq!(
+            format!("{fingerprint:?}"),
+            "InvitationTokenFingerprint([REDACTED])"
+        );
+    }
+
+    #[test]
+    fn invitation_token_rejects_malformed_values() {
+        assert!(InvitationToken::parse("").is_err());
+        assert!(InvitationToken::parse("short").is_err());
+        assert!(InvitationToken::parse("!".repeat(43)).is_err());
+        let token = InvitationToken::generate().expect("CSPRNG must be available");
+        assert!(InvitationToken::parse(format!("{}=", token.expose_secret())).is_err());
     }
 }
