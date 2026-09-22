@@ -3,6 +3,7 @@ mod credentials;
 mod database;
 mod http;
 mod security;
+pub mod testing;
 
 pub use config::{AppConfig, BootstrapAdmin, ConfigError};
 pub use credentials::{
@@ -11,7 +12,8 @@ pub use credentials::{
     SessionToken, SessionTokenError, SessionTokenFingerprint, validate_bootstrap_password,
 };
 pub use database::{
-    AuthenticatedSession, Database, DatabaseError, IssuedSession, SessionError, SessionRecord,
+    AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item,
+    ItemTransfer, MAX_ITEM_NAME_CHARS, SessionError, SessionRecord, TransferOutcome,
 };
 pub use http::{API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database};
 pub use security::{

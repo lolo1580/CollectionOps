@@ -59,6 +59,56 @@ pub struct Database {
     pool: MySqlPool,
 }
 
+/// A collection item, with its server-assigned number and revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub id: String,
+    pub space_id: String,
+    pub inventory_number: u64,
+    pub name: String,
+    pub revision: u64,
+    pub created_by_account_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A recorded move of an item between two spaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemTransfer {
+    pub id: String,
+    pub item_id: String,
+    pub source_space_id: String,
+    pub destination_space_id: String,
+    pub source_inventory_number: u64,
+    pub destination_inventory_number: u64,
+    pub transferred_at: DateTime<Utc>,
+}
+
+/// The result of a transfer: the updated item plus the history entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferOutcome {
+    pub item: Item,
+    pub transfer: ItemTransfer,
+}
+
+/// Why an inventory operation was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryError {
+    /// No item matches the identifier.
+    ItemNotFound,
+    /// No space matches the identifier.
+    SpaceNotFound,
+    /// The caller is not the owner of the space it is acting on.
+    NotOwner,
+    /// The item already lives in the destination space.
+    SameSpace,
+    /// The presented revision is not the current one.
+    RevisionConflict,
+    /// The name is empty after trimming, or longer than the column allows.
+    InvalidName,
+    /// The counter row for the space is missing, which means the space was created without one.
+    CounterMissing,
+}
+
 impl Database {
     /// Connects to MariaDB and applies the versioned backend migrations.
     /// The caller must provide a URL whose TLS settings match the deployment policy.
@@ -368,6 +418,292 @@ impl Database {
 
         Ok(result.rows_affected() == 1)
     }
+
+    /// Loads the current owner of a space, for the invitation and membership checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Inventory`] with `SpaceNotFound`, or a storage error.
+    pub async fn space_owner(&self, space_id: &str) -> Result<String, DatabaseError> {
+        let row = sqlx::query("SELECT owner_account_id FROM spaces WHERE id = ?")
+            .bind(space_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DatabaseError::Query)?
+            .ok_or(DatabaseError::Inventory(InventoryError::SpaceNotFound))?;
+
+        decode_text(&row, "owner_account_id")
+    }
+
+    /// Creates an item and reserves its number in one transaction.
+    ///
+    /// The number is never supplied by the caller. The space counter row is locked with
+    /// `SELECT ... FOR UPDATE`, so two concurrent creations cannot read the same value, and
+    /// the unique key on `(space_id, inventory_number)` is the second line of defence.
+    /// A failure rolls back the reservation, so a number is never burned by a failed attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Inventory`] for an empty or oversized name, an unknown space,
+    /// or a missing counter row.
+    pub async fn create_item(
+        &self,
+        space_id: &str,
+        name: &str,
+        created_by_account_id: &str,
+    ) -> Result<Item, DatabaseError> {
+        let name = name.trim();
+
+        if name.is_empty() || name.chars().count() > MAX_ITEM_NAME_CHARS {
+            return Err(DatabaseError::Inventory(InventoryError::InvalidName));
+        }
+
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        // Lock first, read second: the lock must be held before the value is read, otherwise
+        // two transactions could both read the same number and collide on the unique key.
+        let next_number: Option<u64> = sqlx::query_scalar(
+            "SELECT next_number FROM inventory_counters WHERE space_id = ? FOR UPDATE",
+        )
+        .bind(space_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let Some(next_number) = next_number else {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::CounterMissing));
+        };
+
+        sqlx::query(
+            "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",
+        )
+        .bind(space_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO inventory_items \
+                 (id, space_id, inventory_number, name, revision, created_by_account_id) \
+             VALUES (?, ?, ?, ?, 1, ?)",
+        )
+        .bind(&id)
+        .bind(space_id)
+        .bind(next_number)
+        .bind(name)
+        .bind(created_by_account_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let item = fetch_item(&mut *transaction, &id).await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        Ok(item)
+    }
+
+    /// Loads an item by its stable identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Inventory`] with `ItemNotFound`, or a storage error.
+    pub async fn item(&self, item_id: &str) -> Result<Item, DatabaseError> {
+        fetch_item(&self.pool, item_id).await
+    }
+
+    /// Moves an item to another space, renumbering it there.
+    ///
+    /// The item row is locked first so two concurrent transfers of the same item are
+    /// serialized: the second one sees the new revision and is refused. The source and
+    /// destination numbers are both recorded, so the history keeps the old number after the
+    /// item has moved. The whole operation is one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Inventory`] for an unknown item or space, a stale revision,
+    /// a destination identical to the source, or a missing destination counter.
+    pub async fn transfer_item(
+        &self,
+        item_id: &str,
+        destination_space_id: &str,
+        expected_revision: u64,
+        actor_account_id: &str,
+    ) -> Result<TransferOutcome, DatabaseError> {
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        let row = sqlx::query(
+            "SELECT space_id, inventory_number, revision \
+             FROM inventory_items WHERE id = ? FOR UPDATE",
+        )
+        .bind(item_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?
+        .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+
+        let source_space_id = decode_text(&row, "space_id")?;
+        let source_inventory_number: u64 = row
+            .try_get("inventory_number")
+            .map_err(DatabaseError::Query)?;
+        let revision: u64 = row.try_get("revision").map_err(DatabaseError::Query)?;
+
+        if revision != expected_revision {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::RevisionConflict));
+        }
+
+        if source_space_id == destination_space_id {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::SameSpace));
+        }
+
+        let destination_next: Option<u64> = sqlx::query_scalar(
+            "SELECT next_number FROM inventory_counters WHERE space_id = ? FOR UPDATE",
+        )
+        .bind(destination_space_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let Some(destination_number) = destination_next else {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::CounterMissing));
+        };
+
+        sqlx::query(
+            "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",
+        )
+        .bind(destination_space_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        sqlx::query(
+            "UPDATE inventory_items \
+             SET space_id = ?, inventory_number = ?, revision = revision + 1 \
+             WHERE id = ?",
+        )
+        .bind(destination_space_id)
+        .bind(destination_number)
+        .bind(item_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let transfer_id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO inventory_transfers \
+                 (id, item_id, source_space_id, destination_space_id, source_inventory_number, \
+                  destination_inventory_number, actor_account_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&transfer_id)
+        .bind(item_id)
+        .bind(&source_space_id)
+        .bind(destination_space_id)
+        .bind(source_inventory_number)
+        .bind(destination_number)
+        .bind(actor_account_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let item = fetch_item(&mut *transaction, item_id).await?;
+        let transfer = fetch_transfer(&mut *transaction, &transfer_id).await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+
+        Ok(TransferOutcome { item, transfer })
+    }
+
+    /// Lists the transfers of an item, newest first, for the item history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError`] when the query fails.
+    pub async fn item_transfers(&self, item_id: &str) -> Result<Vec<ItemTransfer>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id, item_id, source_space_id, destination_space_id, source_inventory_number, \
+                    destination_inventory_number, transferred_at \
+             FROM inventory_transfers WHERE item_id = ? ORDER BY transferred_at DESC, id DESC",
+        )
+        .bind(item_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        rows.iter().map(decode_transfer).collect()
+    }
+}
+
+/// Maximum length of an item name, aligned with the `VARCHAR(255)` column.
+pub const MAX_ITEM_NAME_CHARS: usize = 255;
+
+async fn fetch_item<'e, E>(executor: E, item_id: &str) -> Result<Item, DatabaseError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::MySql>,
+{
+    let row = sqlx::query(
+        "SELECT id, space_id, inventory_number, name, revision, created_by_account_id, created_at \
+         FROM inventory_items WHERE id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(DatabaseError::Query)?
+    .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+
+    Ok(Item {
+        id: decode_text(&row, "id")?,
+        space_id: decode_text(&row, "space_id")?,
+        inventory_number: row
+            .try_get("inventory_number")
+            .map_err(DatabaseError::Query)?,
+        name: row.try_get("name").map_err(DatabaseError::Query)?,
+        revision: row.try_get("revision").map_err(DatabaseError::Query)?,
+        created_by_account_id: decode_text(&row, "created_by_account_id")?,
+        created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
+    })
+}
+
+async fn fetch_transfer<'e, E>(
+    executor: E,
+    transfer_id: &str,
+) -> Result<ItemTransfer, DatabaseError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::MySql>,
+{
+    let row = sqlx::query(
+        "SELECT id, item_id, source_space_id, destination_space_id, source_inventory_number, \
+                destination_inventory_number, transferred_at \
+         FROM inventory_transfers WHERE id = ?",
+    )
+    .bind(transfer_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(DatabaseError::Query)?
+    .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+
+    decode_transfer(&row)
+}
+
+fn decode_transfer(row: &sqlx::mysql::MySqlRow) -> Result<ItemTransfer, DatabaseError> {
+    Ok(ItemTransfer {
+        id: decode_text(row, "id")?,
+        item_id: decode_text(row, "item_id")?,
+        source_space_id: decode_text(row, "source_space_id")?,
+        destination_space_id: decode_text(row, "destination_space_id")?,
+        source_inventory_number: row
+            .try_get("source_inventory_number")
+            .map_err(DatabaseError::Query)?,
+        destination_inventory_number: row
+            .try_get("destination_inventory_number")
+            .map_err(DatabaseError::Query)?,
+        transferred_at: row
+            .try_get("transferred_at")
+            .map_err(DatabaseError::Query)?,
+    })
 }
 
 /// The identity resolved from a valid session token.
@@ -389,6 +725,7 @@ fn decode_text(row: &sqlx::mysql::MySqlRow, column: &str) -> Result<String, Data
 #[derive(Debug)]
 pub enum DatabaseError {
     Connection(sqlx::Error),
+    Inventory(InventoryError),
     Migration(sqlx::migrate::MigrateError),
     Query(sqlx::Error),
     Password(crate::credentials::PasswordError),
@@ -398,6 +735,15 @@ pub enum DatabaseError {
 }
 
 impl DatabaseError {
+    /// Returns the inventory rejection reason, when this error is one.
+    #[must_use]
+    pub const fn inventory_error(&self) -> Option<InventoryError> {
+        match self {
+            Self::Inventory(error) => Some(*error),
+            _ => None,
+        }
+    }
+
     /// Returns the session rejection reason, when this error is one.
     ///
     /// Callers assert on the reason instead of comparing whole errors, because the other
@@ -423,6 +769,7 @@ impl fmt::Display for DatabaseError {
             Self::TokenGeneration => formatter.write_str("session token generation failed"),
             Self::InvalidCredentials => formatter.write_str("invalid credentials"),
             Self::Session(_) => formatter.write_str("session rejected"),
+            Self::Inventory(error) => write!(formatter, "inventory rejected: {error:?}"),
         }
     }
 }
@@ -433,7 +780,10 @@ impl Error for DatabaseError {
             Self::Connection(error) | Self::Query(error) => Some(error),
             Self::Migration(error) => Some(error),
             Self::Password(error) => Some(error),
-            Self::TokenGeneration | Self::InvalidCredentials | Self::Session(_) => None,
+            Self::TokenGeneration
+            | Self::InvalidCredentials
+            | Self::Session(_)
+            | Self::Inventory(_) => None,
         }
     }
 }

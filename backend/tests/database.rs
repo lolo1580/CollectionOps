@@ -90,13 +90,7 @@ async fn provisioning_creates_exactly_one_administrator_and_is_idempotent() {
     };
 
     // Keep the assertions independent from whatever the shared test database already holds.
-    // Sessions first: `account_sessions.account_id` references `accounts.id`.
-    sqlx::query("DELETE FROM account_sessions")
-        .execute(database.pool())
-        .await
-        .expect("the test database must be writable");
-    sqlx::query("DELETE FROM accounts WHERE is_system_admin = TRUE")
-        .execute(database.pool())
+    collectionops_backend::testing::clear_all(database.pool())
         .await
         .expect("the test database must be writable");
 

@@ -27,14 +27,9 @@ async fn test_router() -> Option<(Router, MutexGuard<'static, ()>)> {
         .await
         .expect("test database must accept the migrations");
 
-    sqlx::query("DELETE FROM account_sessions")
-        .execute(database.pool())
+    collectionops_backend::testing::clear_all(database.pool())
         .await
-        .expect("sessions must be clearable");
-    sqlx::query("DELETE FROM accounts WHERE is_system_admin = TRUE")
-        .execute(database.pool())
-        .await
-        .expect("accounts must be clearable");
+        .expect("the shared tables must be clearable");
 
     let admin =
         BootstrapAdmin::from_parts(EMAIL, "Root", PASSWORD).expect("the administrator is valid");

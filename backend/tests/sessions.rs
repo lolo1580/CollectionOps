@@ -26,14 +26,9 @@ async fn test_database() -> Option<(Database, MutexGuard<'static, ()>)> {
 async fn database_with_admin() -> Option<(Database, MutexGuard<'static, ()>, PasswordService)> {
     let (database, guard) = test_database().await?;
 
-    sqlx::query("DELETE FROM account_sessions")
-        .execute(database.pool())
+    collectionops_backend::testing::clear_all(database.pool())
         .await
-        .expect("sessions must be clearable");
-    sqlx::query("DELETE FROM accounts WHERE is_system_admin = TRUE")
-        .execute(database.pool())
-        .await
-        .expect("accounts must be clearable");
+        .expect("the shared tables must be clearable");
 
     let admin = BootstrapAdmin::from_parts("root@example.com", "Root", PASSWORD)
         .expect("the test administrator must be valid");
