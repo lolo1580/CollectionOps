@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : brouillon de contrat. La couche de persistance correspondante est implémentée et testée ; les routes HTTP ne sont pas encore exposées.
+- Statut : contrat partiellement implémenté. Les routes espaces, liste/création/lecture d'objets sont exposées ; les transferts restent au stade du contrat.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -12,6 +12,12 @@ Chaque réponse conserve l'en-tête `x-request-id`. Les erreurs utilisent le for
 
 Le numéro d'inventaire et la révision sont des chaînes décimales positives dans le JSON. Cette représentation préserve les grands entiers pour les futurs clients Web. Le serveur attribue le numéro et la révision initiale ; aucune requête de création ou de transfert ne peut les imposer.
 
+## Espaces et listes
+
+`GET /api/v1/spaces` retourne `{"spaces":[...]}` avec les seuls espaces où le compte possède une adhésion et le droit explicite `collections_read`. `POST /api/v1/spaces` reçoit `{"name":"Ma collection"}` et crée un espace personnel (`201`) avec droits explicites `collections_read` et `collections_write` pour son propriétaire. La création d'espaces partagés et les invitations ne font pas partie de cette tranche.
+
+`GET /api/v1/spaces/{space_id}/items` retourne `{"items":[...]}` trié par numéro d'inventaire. L'accès requiert une session, une adhésion et `collections_read`. Un membre sans droit reçoit `403`, un non-membre reçoit `404`.
+
 ## Créer un objet
 
 `POST /api/v1/spaces/{space_id}/items` exige `collections_write` au niveau applicatif et dans l'espace cible. Le corps contient seulement le nom obligatoire pour cette première tranche :
@@ -20,7 +26,7 @@ Le numéro d'inventaire et la révision sont des chaînes décimales positives d
 {"name":"Appareil photo"}
 ```
 
-Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou dépassant 255 caractères après cette opération. La transaction réserve le prochain numéro de l'espace, crée l'objet et enregistre son auteur. La réponse `201` contient un en-tête `Location: /api/v1/items/{id}` et la représentation de l'objet :
+Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou dépassant 255 caractères après cette opération. La transaction réserve le prochain numéro de l'espace, crée l'objet et enregistre son auteur. La réponse `201` contient la représentation de l'objet (l'en-tête `Location` reste à ajouter) :
 
 ```json
 {"id":"0189a4c2-7f00-7000-8000-000000000001","space_id":"0189a4c2-7f00-7000-8000-000000000002","inventory_number":"1","name":"Appareil photo","revision":"1"}
@@ -49,4 +55,4 @@ Le backend verrouille l'objet, vérifie sa révision, son espace courant et les 
 
 ## Hors de cette première tranche
 
-La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations, les listes paginées, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. Les routes de cette page seront ajoutées à OpenAPI lorsqu'un parcours d'authentification vérifié et la création d'espaces seront disponibles. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
+La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations, les listes paginées, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.

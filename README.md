@@ -64,21 +64,21 @@ Points d’entrée initiaux :
 
 Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
 
-Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Pour une ressource d'un espace, le backend doit aussi vérifier l'adhésion et les droits propres à cet espace ; `/api/v1/session` expose seulement les permissions applicatives du principal. Aucun fournisseur d’authentification réel n’est encore branché : cette route répond donc `401` tant qu’un composant vérifié n’a pas injecté le principal.
+Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Les routes de collection vérifient le jeton de session puis l'adhésion et les droits explicites dans chaque espace. `/api/v1/session` reste une route de test avec principal injecté ; les routes métier utilisent directement les sessions persistées.
 
-Les primitives locales utilisent Argon2id pour les mots de passe et des jetons de session opaques de 256 bits. Seules les empreintes des jetons sont destinées à être persistées. Les routes de connexion, la persistance et les politiques d’expiration restent volontairement absentes tant que leurs décisions fonctionnelles ne sont pas validées.
+Les mots de passe utilisent Argon2id et les sessions des jetons opaques de 256 bits ; seule leur empreinte est conservée en base. Les routes de connexion, révocation et expiration sont implémentées.
 
 Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
 
 ## Espaces, adhésions et autorisation
 
-Créer un espace établit ensemble l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire, qui reçoit `collections_write`. La propriété n'accorde **aucun** droit financier, et aucune permission globale ne peut être enregistrée comme droit d'espace.
+Créer un espace établit ensemble l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire, qui reçoit `collections_read` et `collections_write`. La propriété n'accorde **aucun** droit financier, et aucune permission globale ne peut être enregistrée comme droit d'espace.
 
 Chaque opération sur un espace doit vérifier deux choses : une permission applicative portée par l'identité, et un droit explicite dans cet espace, chargé depuis la base. Un identifiant d'espace connu ne suffit jamais. Les droits sont relus à chaque opération, donc un droit retiré cesse immédiatement d'agir, même si le client le croit encore valide.
 
 Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré de son espace : le transfert de propriété sera une opération distincte et auditée.
 
-Ces opérations sont implémentées et testées dans la couche de persistance. Les routes HTTP correspondantes restent à écrire.
+Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Les invitations, délégations et réglages avancés restent à développer.
 
 ## Attribution des numéros d'inventaire
 
@@ -86,7 +86,7 @@ Chaque espace possède une ligne de compteur (`inventory_counters`) initialisée
 
 Un transfert verrouille l'objet, vérifie la révision présentée par le client, puis réserve le prochain numéro de l'espace de destination et enregistre l'ancien et le nouveau numéro dans l'historique. L'identifiant de l'objet ne change jamais ; en revanche le numéro change, et les anciens numéros ne sont pas réutilisés. Une révision obsolète est refusée sans rien modifier.
 
-Ces opérations sont implémentées dans la couche de persistance et couvertes par des tests de concurrence réels. Les routes HTTP correspondantes restent à écrire.
+La création, la liste par espace et la lecture des objets sont reliées à l'API et au client Windows. Le transfert reste disponible dans la couche de persistance mais n'est pas encore exposé par HTTP.
 
 ## Routes de session
 
@@ -106,7 +106,7 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur, tester la connexion et choisir le thème. Dans **Compte**, se connecter avec un compte existant, consulter les sessions ou révoquer un appareil. L'API de session nécessite `COLLECTIONOPS_DATABASE_URL` côté serveur. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage du client. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Les modules de collection et le mode hors ligne ne sont pas encore reliés à l'API.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter avec un compte existant. Dans **Collection**, créer ou choisir un espace, puis consulter et ajouter des objets. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 

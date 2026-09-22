@@ -124,8 +124,8 @@ async fn creating_a_space_establishes_the_owner_membership_counter_and_grant() {
         .expect("the owner must be a member");
     assert_eq!(
         membership.permissions,
-        BTreeSet::from([Permission::CollectionsWrite]),
-        "ownership grants collection write, not financial access"
+        BTreeSet::from([Permission::CollectionsRead, Permission::CollectionsWrite]),
+        "ownership grants collection read/write, not financial access"
     );
 }
 

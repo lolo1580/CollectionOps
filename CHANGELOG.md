@@ -12,12 +12,15 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Premier parcours connecté : création et liste d'espaces, création et liste d'objets, lecture d'un objet, avec contrôle du jeton et des droits par espace.
+- Écran Windows « Collection » pour choisir un espace et gérer un inventaire simple.
+- Migration accordant explicitement la lecture aux propriétaires d'espaces existants, et test HTTP du parcours et de l'isolement des espaces.
 - Client Windows : page Compte avec configuration de l'adresse du serveur, vérification de santé, connexion, liste et révocation des sessions. Le jeton est conservé uniquement en mémoire et n'est envoyé qu'au serveur configuré.
 - Page Paramètres du client Windows : libellé de navigation en français, configuration et test de l'adresse du serveur, choix temporaire du thème Windows, clair ou sombre.
 - Création d'espace établissant dans une même transaction l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire.
 - Adhésions avec droits explicites : ajout d'un membre, remplacement de ses droits, retrait et liste des membres.
 - Refus d'une permission globale comme droit d'espace, d'un membre déjà présent, d'un membre qui modifierait ses propres droits et du retrait du propriétaire courant.
-- Le propriétaire d'un espace ne reçoit aucun droit financier : la propriété n'implique que l'écriture de collection.
+- Le propriétaire d'un espace ne reçoit aucun droit financier : la propriété n'implique que la lecture et l'écriture de collection.
 - Tests d'extrémité du contrôle d'autorisation par espace, avec adhésion chargée depuis la base, y compris le cas d'un identifiant d'espace connu par un non-membre.
 - Création d'objet avec attribution du numéro d'inventaire dans une transaction verrouillant le compteur de l'espace, et refus d'un nom vide ou dépassant 255 caractères.
 - Transfert d'objet renuméroté dans l'espace de destination, avec conservation de l'ancien et du nouveau numéro dans l'historique et augmentation de la révision.

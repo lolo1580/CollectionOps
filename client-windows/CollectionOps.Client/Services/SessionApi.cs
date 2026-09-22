@@ -97,6 +97,27 @@ public sealed class SessionApi : IDisposable
             ?? throw new InvalidOperationException("La liste des sessions est incomplète.");
     }
 
+    public async Task<IReadOnlyList<CollectionSpace>> GetSpacesAsync()
+    {
+        var result = await SendJsonAsync<SpaceListResponse>(HttpMethod.Get, "api/v1/spaces");
+        return result.Spaces;
+    }
+
+    public Task<CollectionSpace> CreateSpaceAsync(string name) =>
+        SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
+
+    public async Task<IReadOnlyList<InventoryItem>> GetItemsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<ItemListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/items");
+        return result.Items;
+    }
+
+    public Task<InventoryItem> CreateItemAsync(Guid spaceId, string name) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/items", new { name });
+
+    public Task<InventoryItem> GetItemAsync(Guid itemId) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Get, $"api/v1/items/{itemId}");
+
     public async Task RevokeAsync(string sessionId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -136,6 +157,23 @@ public sealed class SessionApi : IDisposable
         return request;
     }
 
+    private async Task<T> SendJsonAsync<T>(HttpMethod method, string path, object? body = null)
+    {
+        using var request = AuthenticatedRequest(method, path);
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body);
+        }
+        using var response = await _client.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            SignOut();
+        }
+        await EnsureSuccessAsync(response);
+        return await response.Content.ReadFromJsonAsync<T>()
+            ?? throw new InvalidOperationException("La réponse du serveur est incomplète.");
+    }
+
     private static async Task EnsureSuccessAsync(HttpResponseMessage response)
     {
         if (response.IsSuccessStatusCode)
@@ -146,11 +184,6 @@ public sealed class SessionApi : IDisposable
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             throw new InvalidOperationException("Identifiants refusés ou session expirée.");
-        }
-
-        if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new InvalidOperationException("Cette fonction n'est pas disponible sur ce serveur.");
         }
 
         if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
@@ -171,6 +204,11 @@ public sealed class SessionApi : IDisposable
             // A proxy can return HTML instead of the API's problem JSON.
         }
 
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException("Cette ressource est introuvable ou inaccessible.");
+        }
+
         throw new InvalidOperationException($"Le serveur a répondu {(int)response.StatusCode}.");
     }
 }
@@ -187,3 +225,15 @@ public sealed record LoginResponse(
     [property: JsonPropertyName("session")] SessionSummary Session);
 public sealed record HealthResponse([property: JsonPropertyName("status")] string Status);
 public sealed record ProblemResponse([property: JsonPropertyName("detail")] string? Detail);
+public sealed record CollectionSpace(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("owner_account_id")] Guid OwnerAccountId);
+public sealed record SpaceListResponse([property: JsonPropertyName("spaces")] List<CollectionSpace> Spaces);
+public sealed record InventoryItem(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("inventory_number")] string InventoryNumber,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("revision")] string Revision);
+public sealed record ItemListResponse([property: JsonPropertyName("items")] List<InventoryItem> Items);

@@ -785,6 +785,17 @@ impl Database {
         .await
         .map_err(DatabaseError::Query)?;
 
+        sqlx::query(
+            "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(space_id.to_string())
+        .bind(owner_account_id.to_string())
+        .bind(permission_code(Permission::CollectionsRead))
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+
         let space = fetch_space(&mut *transaction, space_id).await?;
         transaction.commit().await.map_err(DatabaseError::Query)?;
 
@@ -798,6 +809,49 @@ impl Database {
     /// Returns [`DatabaseError::Space`] with `SpaceNotFound`, or a storage error.
     pub async fn space(&self, space_id: Uuid) -> Result<Space, DatabaseError> {
         fetch_space(&self.pool, space_id).await
+    }
+
+    /// Lists only spaces where the account has an explicit membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if a space cannot be read.
+    pub async fn spaces_for_account(&self, account_id: Uuid) -> Result<Vec<Space>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT s.id FROM spaces s JOIN space_memberships m ON m.space_id = s.id \
+             WHERE m.account_id = ? ORDER BY s.created_at, s.id",
+        )
+        .bind(account_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let mut spaces = Vec::with_capacity(rows.len());
+        for row in rows {
+            spaces.push(self.space(parse_uuid(&decode_text(&row, "id")?)?).await?);
+        }
+        Ok(spaces)
+    }
+
+    /// Lists inventory in one space; the HTTP layer must authorize that space first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if an item cannot be read.
+    pub async fn items_in_space(&self, space_id: Uuid) -> Result<Vec<Item>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id FROM inventory_items WHERE space_id = ? ORDER BY inventory_number",
+        )
+        .bind(space_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            items.push(self.item(parse_uuid(&decode_text(&row, "id")?)?).await?);
+        }
+        Ok(items)
     }
 
     /// Loads a space membership together with the account's explicit grants.

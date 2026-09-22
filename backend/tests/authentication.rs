@@ -9,7 +9,9 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use collectionops_backend::{BootstrapAdmin, Database, PasswordService, SESSION_TOKEN_HEADER};
+use collectionops_backend::{
+    BootstrapAdmin, Database, PasswordService, Permission, SESSION_TOKEN_HEADER,
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, MutexGuard};
@@ -135,6 +137,191 @@ async fn login_returns_a_token_that_authenticates() {
         payload["principal"]["subject"],
         second_payload["principal"]["subject"]
     );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One end-to-end scenario keeps its shared session and database fixture together.
+async fn collection_path_enforces_session_and_space_membership() {
+    let Ok(database_url) = std::env::var("COLLECTIONOPS_TEST_DATABASE_URL") else {
+        return;
+    };
+    let _guard = DATABASE_LOCK.lock().await;
+    let database = Database::connect_and_migrate(&database_url).await.unwrap();
+    collectionops_backend::testing::clear_all(database.pool())
+        .await
+        .unwrap();
+    let admin = BootstrapAdmin::from_parts(EMAIL, "Root", PASSWORD).unwrap();
+    database
+        .provision_bootstrap_admin(&admin, &PasswordService::default())
+        .await
+        .unwrap();
+
+    // A second valid account exists, but it has no membership in the owner's space.
+    let outsider = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO accounts (id, display_name, email, password_hash) \
+        SELECT ?, 'Outsider', 'outsider@example.com', password_hash FROM accounts WHERE email = ?",
+    )
+    .bind(outsider.to_string())
+    .bind(EMAIL)
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let audit_db = database.clone();
+    let router = collectionops_backend::app_with_database(database);
+    let owner_token = login(&router, json!({"email": EMAIL, "password": PASSWORD})).await;
+    let outsider_token = login(
+        &router,
+        json!({"email": "outsider@example.com", "password": PASSWORD}),
+    )
+    .await;
+
+    let create = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/spaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::from(json!({"name":"Ma collection"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let space = body_json(create).await;
+    let space_id = space["id"].as_str().unwrap();
+
+    let spaces = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/spaces")
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(spaces).await["spaces"].as_array().unwrap().len(),
+        1
+    );
+    let outsider_spaces = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/spaces")
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(outsider_spaces).await["spaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let path = format!("/api/v1/spaces/{space_id}/items");
+    let denied = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+    let no_session = router
+        .clone()
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(no_session.status(), StatusCode::UNAUTHORIZED);
+
+    let create_item = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::from(json!({"name":"Appareil photo"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_item.status(), StatusCode::CREATED);
+    let item = body_json(create_item).await;
+    assert_eq!(item["inventory_number"], "1");
+    let item_path = format!("/api/v1/items/{}", item["id"].as_str().unwrap());
+    let outsider_item = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&item_path)
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outsider_item.status(), StatusCode::NOT_FOUND);
+    let owner_item = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&item_path)
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(owner_item.status(), StatusCode::OK);
+
+    audit_db
+        .add_member(
+            uuid::Uuid::parse_str(space_id).unwrap(),
+            outsider,
+            &[Permission::CollectionsRead],
+        )
+        .await
+        .unwrap();
+    let read_only_list = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read_only_list.status(), StatusCode::OK);
+    let write_denied = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::from(json!({"name":"Interdit"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write_denied.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

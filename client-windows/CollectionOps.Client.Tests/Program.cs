@@ -6,7 +6,8 @@ await RejectInsecureRemoteServer();
 await RejectUnexpectedHealth();
 await ClearExpiredSession();
 await RejectMalformedJson();
-Console.WriteLine("SessionApi: 4 checks passed.");
+await ReadCollectionWithSession();
+Console.WriteLine("SessionApi: 5 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -46,6 +47,19 @@ static async Task RejectMalformedJson()
     using var api = new SessionApi(handler);
     api.Configure("http://127.0.0.1:8080");
     await ExpectAsync<System.Text.Json.JsonException>(() => api.CheckHealthAsync());
+}
+
+static async Task ReadCollectionWithSession()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"spaces":[{"id":"01900000-0000-7000-8000-000000000001","name":"Ma collection","owner_account_id":"01900000-0000-7000-8000-000000000002"}]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var spaces = await api.GetSpacesAsync();
+    Assert(spaces.Count == 1 && spaces[0].Name == "Ma collection", "The authenticated collection list must parse.");
+    Assert(handler.LastToken == "secret", "Collection calls must carry the session token.");
 }
 
 static void Assert(bool condition, string message)

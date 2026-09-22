@@ -1,10 +1,11 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::{
     Extension, Json, Router,
     body::Body,
     extract::{Path, Request, State},
-    http::{HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -16,8 +17,11 @@ use uuid::Uuid;
 
 use crate::{
     credentials::{EmailAddress, IdleTimeout, PasswordService, SessionToken, SessionTokenError},
-    database::{Database, DatabaseError, IssuedSession, SessionError, SessionRecord},
-    security::Principal,
+    database::{
+        Database, DatabaseError, InventoryError, IssuedSession, Item, SessionError, SessionRecord,
+        Space, SpaceError,
+    },
+    security::{Permission, Principal},
 };
 
 pub const API_PREFIX: &str = "/api/v1";
@@ -125,6 +129,28 @@ struct ApiError {
 }
 
 impl ApiError {
+    fn resource_not_found(instance: &str) -> Self {
+        let mut error = Self::route_not_found(instance);
+        "Ressource introuvable ou inaccessible.".clone_into(&mut error.problem.detail);
+        error.problem.code = "resource_not_found";
+        error
+    }
+
+    fn forbidden(instance: &str) -> Self {
+        let status = StatusCode::FORBIDDEN;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Accès refusé",
+                status: status.as_u16(),
+                detail: "La permission requise manque dans cet espace.".to_owned(),
+                instance: instance.to_owned(),
+                code: "permission_denied",
+            },
+        }
+    }
+
     fn authentication_required(instance: &str) -> Self {
         let status = StatusCode::UNAUTHORIZED;
         Self {
@@ -482,15 +508,287 @@ fn login_response(issued: IssuedSession) -> LoginResponse {
     LoginResponse {
         session: SessionSummary::from(issued.session),
         token,
-        // Login does not grant application permissions yet: roles and permission expansion
-        // arrive with the membership layer, so the principal is returned without them.
-        principal: Principal {
-            subject: issued.account_id,
-            display_name: issued.display_name,
-            roles: std::collections::BTreeSet::new(),
-            permissions: std::collections::BTreeSet::new(),
-        },
+        principal: collection_principal(issued.account_id, issued.display_name),
     }
+}
+
+// At this stage every authenticated account may use collection features, but a space still
+// requires an explicit membership and grant. Other application permissions are never inferred.
+fn collection_principal(subject: Uuid, display_name: String) -> Principal {
+    Principal {
+        subject,
+        display_name,
+        roles: BTreeSet::default(),
+        permissions: [Permission::CollectionsRead, Permission::CollectionsWrite].into(),
+    }
+}
+
+async fn authenticated_headers(
+    database: &Database,
+    headers: &HeaderMap,
+    instance: &str,
+) -> Result<Principal, ApiError> {
+    let value = headers
+        .get(SESSION_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::authentication_required(instance))?;
+    let token =
+        SessionToken::parse(value).map_err(|_| ApiError::authentication_required(instance))?;
+    let session = database
+        .authenticate_session(&token)
+        .await
+        .map_err(|error| session_error_to_api(instance, &error))?;
+    let subject = Uuid::parse_str(&session.account_id).map_err(|_| ApiError::internal(instance))?;
+    Ok(collection_principal(subject, session.display_name))
+}
+
+async fn authorized_space(
+    database: &Database,
+    principal: &Principal,
+    space_id: Uuid,
+    permission: Permission,
+    instance: &str,
+) -> Result<Space, ApiError> {
+    let membership = database
+        .membership(space_id, principal.subject)
+        .await
+        .map_err(|_| ApiError::internal(instance))?
+        .ok_or_else(|| ApiError::resource_not_found(instance))?;
+    principal
+        .require_space_permission(
+            space_id,
+            Some(&membership.as_space_membership()),
+            permission,
+        )
+        .map_err(|_| ApiError::forbidden(instance))?;
+    database
+        .space(space_id)
+        .await
+        .map_err(|error| match error.space_error() {
+            Some(SpaceError::SpaceNotFound) => ApiError::resource_not_found(instance),
+            _ => ApiError::internal(instance),
+        })
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub owner_account_id: Uuid,
+    pub created_at: String,
+}
+impl From<Space> for SpaceResponse {
+    fn from(value: Space) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            owner_account_id: value.owner_account_id,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceListResponse {
+    pub spaces: Vec<SpaceResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateSpaceRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub inventory_number: String,
+    pub name: String,
+    pub revision: String,
+    pub created_at: String,
+}
+impl From<Item> for ItemResponse {
+    fn from(value: Item) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            inventory_number: value.inventory_number.to_string(),
+            name: value.name,
+            revision: value.revision.to_string(),
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemListResponse {
+    pub items: Vec<ItemResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateItemRequest {
+    pub name: String,
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces", tag = "collection",
+    responses((status = 200, body = SpaceListResponse), (status = 401, body = ProblemDetails)))]
+async fn list_spaces(
+    State(state): State<AppState>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<Json<SpaceListResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let spaces = database
+        .spaces_for_account(principal.subject)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    let mut visible = Vec::new();
+    for space in spaces {
+        let membership = database
+            .membership(space.id, principal.subject)
+            .await
+            .map_err(|_| ApiError::internal(uri.path()))?;
+        if principal
+            .require_space_permission(
+                space.id,
+                membership
+                    .as_ref()
+                    .map(crate::database::Membership::as_space_membership)
+                    .as_ref(),
+                Permission::CollectionsRead,
+            )
+            .is_ok()
+        {
+            visible.push(space.into());
+        }
+    }
+    Ok(Json(SpaceListResponse { spaces: visible }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces", tag = "collection", request_body = CreateSpaceRequest,
+    responses((status = 201, body = SpaceResponse), (status = 401, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn create_space(
+    State(state): State<AppState>,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(payload): Json<CreateSpaceRequest>,
+) -> Result<(StatusCode, Json<SpaceResponse>), ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let space = database
+        .create_space(&payload.name, principal.subject)
+        .await
+        .map_err(|error| match error.space_error() {
+            Some(SpaceError::InvalidName) => {
+                ApiError::invalid_request(uri.path(), "Nom d'espace invalide.", "invalid_name")
+            }
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok((StatusCode::CREATED, Json(space.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/items", tag = "collection",
+    params(("space_id" = Uuid, Path, description = "Espace de collection")),
+    responses((status = 200, body = ItemListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_items(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemListResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    authorized_space(
+        database,
+        &principal,
+        space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let items = database
+        .items_in_space(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(ItemListResponse {
+        items: items.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/items", tag = "collection", request_body = CreateItemRequest,
+    params(("space_id" = Uuid, Path, description = "Espace de collection")),
+    responses((status = 201, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn create_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateItemRequest>,
+) -> Result<(StatusCode, Json<ItemResponse>), ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    authorized_space(
+        database,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let item = database
+        .create_item(space_id, &payload.name, principal.subject)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::InvalidName) => {
+                ApiError::invalid_request(uri.path(), "Nom d'objet invalide.", "invalid_name")
+            }
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok((StatusCode::CREATED, Json(item.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/items/{item_id}", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn get_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    Ok(Json(item.into()))
 }
 
 fn session_error_to_api(instance: &str, error: &DatabaseError) -> ApiError {
@@ -525,7 +823,12 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         session,
         create_session,
         list_sessions,
-        revoke_session
+        revoke_session,
+        list_spaces,
+        create_space,
+        list_items,
+        create_item,
+        get_item
     ),
     components(schemas(
         HealthResponse,
@@ -536,13 +839,16 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         SessionListResponse,
         LoginRequest,
         LoginResponse,
+        SpaceResponse, SpaceListResponse, CreateSpaceRequest,
+        ItemResponse, ItemListResponse, CreateItemRequest,
         IdleTimeout,
         Principal,
         crate::security::Permission
     )),
     tags(
         (name = "system", description = "État et métadonnées du service"),
-        (name = "authentication", description = "Session et identité applicative")
+        (name = "authentication", description = "Session et identité applicative"),
+        (name = "collection", description = "Espaces et inventaire")
     )
 )]
 pub struct ApiDoc;
@@ -613,6 +919,15 @@ fn app_with_state(state: AppState) -> Router {
                 &format!("{API_PREFIX}/sessions/{{session_id}}"),
                 delete(revoke_session),
             )
+            .route(
+                &format!("{API_PREFIX}/spaces"),
+                get(list_spaces).post(create_space),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/items"),
+                get(list_items).post(create_item),
+            )
+            .route(&format!("{API_PREFIX}/items/{{item_id}}"), get(get_item))
     } else {
         Router::new()
     };
