@@ -98,10 +98,17 @@ async fn login_returns_a_token_that_authenticates() {
     assert_eq!(payload["session"]["idle_timeout"], "minutes_30");
     assert!(payload["token"].as_str().is_some_and(|t| t.len() == 43));
     assert!(payload["session"].get("token").is_none());
+    assert_eq!(payload["principal"]["display_name"], "Root");
+    assert!(
+        payload["principal"]["subject"]
+            .as_str()
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+    );
 
     // The token is accepted on the session list route.
     let token = payload["token"].as_str().unwrap();
     let listed = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/sessions")
@@ -115,6 +122,19 @@ async fn login_returns_a_token_that_authenticates() {
     assert_eq!(listed.status(), StatusCode::OK);
     let listed = body_json(listed).await;
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+
+    let second_login = router
+        .oneshot(login_request(
+            &json!({"email": EMAIL, "password": PASSWORD}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second_login.status(), StatusCode::CREATED);
+    let second_payload = body_json(second_login).await;
+    assert_eq!(
+        payload["principal"]["subject"],
+        second_payload["principal"]["subject"]
+    );
 }
 
 #[tokio::test]

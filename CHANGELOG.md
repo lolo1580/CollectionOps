@@ -4,6 +4,12 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ## [Non publié]
 
+### Corrigé
+
+- La connexion renvoie l'identifiant et le nom du compte authentifié dans `principal`, au lieu d'un identifiant aléatoire et d'un nom vide.
+- Le client Windows efface son état de connexion après un refus `401` sur les sessions et affiche une erreur contrôlée pour une réponse JSON invalide ou un état de santé inattendu.
+- Quatre vérifications automatisées du client de session couvrent l'adresse serveur, l'état de santé, l'expiration de session et une réponse JSON invalide ; elles s'exécutent aussi dans la CI Windows.
+
 ### Ajouté
 
 - Client Windows : page Compte avec configuration de l'adresse du serveur, vérification de santé, connexion, liste et révocation des sessions. Le jeton est conservé uniquement en mémoire et n'est envoyé qu'au serveur configuré.

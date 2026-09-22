@@ -26,9 +26,15 @@ public sealed partial class SettingsPage : Page
             var message = await App.Sessions.CheckHealthAsync();
             ShowStatus(message, InfoBarSeverity.Success);
         }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException)
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
-            ShowStatus(error is TaskCanceledException ? "Le serveur ne répond pas dans le délai prévu." : error.Message, InfoBarSeverity.Error);
+            var message = error switch
+            {
+                TaskCanceledException => "Le serveur ne répond pas dans le délai prévu.",
+                System.Text.Json.JsonException or NotSupportedException => "La réponse du serveur n'est pas un document JSON attendu.",
+                _ => error.Message,
+            };
+            ShowStatus(message, InfoBarSeverity.Error);
         }
         finally
         {

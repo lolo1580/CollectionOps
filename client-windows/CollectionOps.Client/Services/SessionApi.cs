@@ -8,10 +8,7 @@ namespace CollectionOps.Client.Services;
 // The session token is deliberately kept in memory until local encrypted storage is designed.
 public sealed class SessionApi : IDisposable
 {
-    private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false })
-    {
-        Timeout = TimeSpan.FromSeconds(15),
-    };
+    private readonly HttpClient _client;
 
     private Uri? _server;
     private string? _token;
@@ -19,6 +16,14 @@ public sealed class SessionApi : IDisposable
     public bool IsSignedIn => _token is not null;
     public string? ServerAddress => _server?.ToString();
     public string? CurrentSessionId { get; private set; }
+
+    public SessionApi(HttpMessageHandler? handler = null)
+    {
+        _client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
+        {
+            Timeout = TimeSpan.FromSeconds(15),
+        };
+    }
 
     public void Configure(string address)
     {
@@ -47,7 +52,9 @@ public sealed class SessionApi : IDisposable
         using var response = await _client.GetAsync(Endpoint("api/v1/health"));
         await EnsureSuccessAsync(response);
         var health = await response.Content.ReadFromJsonAsync<HealthResponse>();
-        return health?.Status == "ok" ? "Serveur disponible" : "Réponse inattendue du serveur";
+        return health?.Status == "ok"
+            ? "Serveur disponible"
+            : throw new InvalidOperationException("Réponse de santé inattendue du serveur.");
     }
 
     public async Task SignInAsync(string email, string password)
@@ -80,15 +87,24 @@ public sealed class SessionApi : IDisposable
     {
         using var request = AuthenticatedRequest(HttpMethod.Get, "api/v1/sessions");
         using var response = await _client.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            SignOut();
+        }
         await EnsureSuccessAsync(response);
         var result = await response.Content.ReadFromJsonAsync<SessionListResponse>();
-        return result?.Sessions ?? [];
+        return result?.Sessions
+            ?? throw new InvalidOperationException("La liste des sessions est incomplète.");
     }
 
     public async Task RevokeAsync(string sessionId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/sessions/{Uri.EscapeDataString(sessionId)}");
         using var response = await _client.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            SignOut();
+        }
         await EnsureSuccessAsync(response);
         if (sessionId == CurrentSessionId)
         {

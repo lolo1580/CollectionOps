@@ -41,3 +41,6 @@ jobs:
       - name: Build client
         run: dotnet build client-windows/CollectionOps.Client/CollectionOps.Client.csproj --configuration Release --no-restore -p:Platform=x64
 
+      - name: Check session client behavior
+        run: dotnet run --project client-windows/CollectionOps.Client.Tests/CollectionOps.Client.Tests.csproj --configuration Release
+

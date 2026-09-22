@@ -28,6 +28,8 @@ pub struct SessionRecord {
 /// A freshly issued session. The bearer token is returned exactly once, at login.
 pub struct IssuedSession {
     pub session: SessionRecord,
+    pub account_id: Uuid,
+    pub display_name: String,
     token: SessionToken,
 }
 
@@ -292,7 +294,7 @@ impl Database {
         passwords: &PasswordService,
     ) -> Result<IssuedSession, DatabaseError> {
         let account = sqlx::query(
-            "SELECT id, password_hash FROM accounts WHERE email = ? AND password_hash IS NOT NULL",
+            "SELECT id, display_name, password_hash FROM accounts WHERE email = ? AND password_hash IS NOT NULL",
         )
         .bind(email.as_str())
         .fetch_optional(&self.pool)
@@ -317,6 +319,11 @@ impl Database {
         let account_id: Vec<u8> = account.try_get("id").map_err(DatabaseError::Query)?;
         let account_id =
             String::from_utf8(account_id).map_err(|_| DatabaseError::InvalidCredentials)?;
+        let account_uuid = Uuid::parse_str(&account_id)
+            .map_err(|_| DatabaseError::Session(SessionError::Storage))?;
+        let display_name: String = account
+            .try_get("display_name")
+            .map_err(DatabaseError::Query)?;
 
         let lifetime = if persistent {
             SessionLifetime::PERSISTENT_SECONDS
@@ -349,6 +356,8 @@ impl Database {
         .map_err(DatabaseError::Query)?;
 
         Ok(IssuedSession {
+            account_id: account_uuid,
+            display_name,
             session: SessionRecord {
                 id,
                 device_label: device_label.map(str::to_owned),

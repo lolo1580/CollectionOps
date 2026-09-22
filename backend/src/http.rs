@@ -485,8 +485,8 @@ fn login_response(issued: IssuedSession) -> LoginResponse {
         // Login does not grant application permissions yet: roles and permission expansion
         // arrive with the membership layer, so the principal is returned without them.
         principal: Principal {
-            subject: Uuid::now_v7(),
-            display_name: String::new(),
+            subject: issued.account_id,
+            display_name: issued.display_name,
             roles: std::collections::BTreeSet::new(),
             permissions: std::collections::BTreeSet::new(),
         },
