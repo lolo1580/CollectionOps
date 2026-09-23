@@ -12,9 +12,11 @@ public sealed class SessionApi : IDisposable
 
     private Uri? _server;
     private string? _token;
+    private bool _allowInsecurePrivateNetwork;
 
     public bool IsSignedIn => _token is not null;
     public string? ServerAddress => _server?.ToString();
+    public bool AllowInsecurePrivateNetwork => _allowInsecurePrivateNetwork;
     public string? CurrentSessionId { get; private set; }
     public Guid? CurrentAccountId { get; private set; }
     public bool CurrentIsSystemAdmin { get; private set; }
@@ -27,7 +29,9 @@ public sealed class SessionApi : IDisposable
         };
     }
 
-    public void Configure(string address)
+    public void Configure(string address) => Configure(address, _allowInsecurePrivateNetwork);
+
+    public void Configure(string address, bool allowInsecurePrivateNetwork)
     {
         if (!Uri.TryCreate(address.Trim(), UriKind.Absolute, out var uri) ||
             !string.IsNullOrEmpty(uri.UserInfo) ||
@@ -35,18 +39,33 @@ public sealed class SessionApi : IDisposable
             !string.IsNullOrEmpty(uri.Fragment) ||
             uri.AbsolutePath != "/" ||
             (uri.Scheme != Uri.UriSchemeHttps &&
-             !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)))
+             !(uri.Scheme == Uri.UriSchemeHttp &&
+               (uri.IsLoopback || (allowInsecurePrivateNetwork && IsPrivateIpv4(uri))))))
         {
-            throw new ArgumentException("Utilisez une adresse HTTPS, ou HTTP pour un serveur local uniquement.");
+            throw new ArgumentException("Utilisez HTTPS, ou activez explicitement HTTP pour une adresse IP privée de développement.");
         }
 
         // Changing servers must never send a token issued by the previous server.
-        if (_server != uri)
+        if (_server != uri || _allowInsecurePrivateNetwork != allowInsecurePrivateNetwork)
         {
             SignOut();
         }
 
+        _allowInsecurePrivateNetwork = allowInsecurePrivateNetwork;
         _server = uri;
+    }
+
+    private static bool IsPrivateIpv4(Uri uri)
+    {
+        if (uri.HostNameType != UriHostNameType.IPv4 || !IPAddress.TryParse(uri.Host, out var address))
+        {
+            return false;
+        }
+
+        var bytes = address.GetAddressBytes();
+        return bytes[0] == 10 ||
+               (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
+               (bytes[0] == 192 && bytes[1] == 168);
     }
 
     public async Task<string> CheckHealthAsync()

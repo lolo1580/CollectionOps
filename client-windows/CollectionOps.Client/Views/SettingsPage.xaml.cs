@@ -9,6 +9,7 @@ public sealed partial class SettingsPage : Page
     {
         InitializeComponent();
         ServerAddress.Text = App.Sessions.ServerAddress ?? "http://127.0.0.1:8080";
+        AllowHttpLan.IsChecked = App.Sessions.AllowInsecurePrivateNetwork;
         ThemeChoice.SelectedIndex = App.MainWindow?.CurrentTheme switch
         {
             ElementTheme.Light => 1,
@@ -22,12 +23,13 @@ public sealed partial class SettingsPage : Page
         CheckServerButton.IsEnabled = false;
         try
         {
-            App.Sessions.Configure(ServerAddress.Text);
+            App.Sessions.Configure(ServerAddress.Text, AllowHttpLan.IsChecked == true);
             var message = await App.Sessions.CheckHealthAsync();
             ShowStatus(message, InfoBarSeverity.Success);
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
+            AllowHttpLan.IsChecked = App.Sessions.AllowInsecurePrivateNetwork;
             var message = error switch
             {
                 TaskCanceledException => "Le serveur ne répond pas dans le délai prévu.",

@@ -10,8 +10,10 @@
 
             <TextBlock Text="Connexion au serveur" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBox x:Name="ServerAddress" Header="Adresse du serveur" PlaceholderText="https://collectionops.exemple.org" />
+            <CheckBox x:Name="AllowHttpLan" Content="Autoriser HTTP vers une adresse IP privée (développement uniquement)" />
+            <TextBlock Text="Attention : en HTTP, le mot de passe et les jetons de session circulent sans chiffrement sur le réseau. N'activez cette option que sur un LAN de confiance." TextWrapping="Wrap" Opacity="0.7" />
             <Button x:Name="CheckServerButton" Content="Enregistrer et tester" Click="OnCheckServer" Style="{StaticResource AccentButtonStyle}" />
-            <TextBlock Text="HTTPS est requis pour un serveur distant. Enregistrer une autre adresse déconnecte ce client du serveur précédent." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="HTTPS reste requis ailleurs. Changer d'adresse ou de mode déconnecte ce client du serveur précédent." TextWrapping="Wrap" Opacity="0.7" />
 
             <TextBlock Text="Apparence" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <ComboBox x:Name="ThemeChoice" Header="Thème" Width="260" SelectedIndex="0" SelectionChanged="OnThemeChanged">

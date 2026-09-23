@@ -12,7 +12,7 @@
             <TextBlock Text="Serveur" Style="{StaticResource SubtitleTextBlockStyle}" />
             <TextBox x:Name="ServerAddress" Header="Adresse du serveur" Text="http://127.0.0.1:8080" PlaceholderText="https://collectionops.exemple.org" />
             <Button x:Name="CheckServerButton" Content="Tester la connexion" Click="OnCheckServer" />
-            <TextBlock Text="HTTPS est obligatoire à distance. HTTP est accepté uniquement pour un serveur local." TextWrapping="Wrap" Opacity="0.7" />
+            <TextBlock Text="HTTPS est obligatoire à distance. Pour un serveur HTTP sur le LAN de développement, activez d'abord l'option dans Paramètres." TextWrapping="Wrap" Opacity="0.7" />
 
             <TextBlock Text="Connexion" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBox x:Name="EmailAddress" Header="Adresse e-mail" InputScope="EmailSmtpAddress" />

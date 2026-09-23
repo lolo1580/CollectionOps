@@ -12,6 +12,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Client Windows : option temporaire pour joindre directement une adresse IPv4 privée en HTTP pendant le développement, désactivée par défaut et limitée aux plages privées ; changement de serveur ou de mode invalidant la session locale.
 - Envies, vendeurs et offres repérées par espace, sans montants, avec droits d'acquisition explicites, API et écran Windows ; migration des droits des propriétaires existants et tests d'isolation.
 - Renommage des séries et regroupements avec contrôle de révision ; suppression des seuls ensembles vides, confirmée dans le client Windows.
 - Description, références historique et technique des objets, avec validation et contrôle de révision dans l'API et le client Windows.

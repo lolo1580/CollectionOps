@@ -3,6 +3,8 @@ using System.Text;
 using CollectionOps.Client.Services;
 
 await RejectInsecureRemoteServer();
+await AllowPrivateLanHttpOnlyWithOptIn();
+await ChangingLanModeClearsSession();
 await RejectUnexpectedHealth();
 await ClearExpiredSession();
 await RejectMalformedJson();
@@ -29,14 +31,43 @@ await AssignGroupsAndFilterInventory();
 await RenameAndDeleteEmptyGroup();
 await ReadAcquisitionPermissionsAndWishes();
 await CreateVendorAndOfferWithoutAmounts();
-Console.WriteLine("SessionApi: 27 checks passed.");
+Console.WriteLine("SessionApi: 29 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
     using var api = new SessionApi(new FakeHandler());
     Expect<ArgumentException>(() => api.Configure("http://example.org"));
+    Expect<ArgumentException>(() => api.Configure("http://192.168.30.60:8080"));
     api.Configure("http://127.0.0.1:8080");
     return Task.CompletedTask;
+}
+
+static Task AllowPrivateLanHttpOnlyWithOptIn()
+{
+    using var api = new SessionApi(new FakeHandler());
+    api.Configure("http://192.168.30.60:8080", true);
+    Assert(api.ServerAddress == "http://192.168.30.60:8080/" && api.AllowInsecurePrivateNetwork,
+        "A private IPv4 development server must require explicit opt-in.");
+    api.Configure("http://10.0.0.10:8080");
+    api.Configure("http://172.16.0.10:8080");
+    Expect<ArgumentException>(() => api.Configure("http://172.32.0.10:8080"));
+    Expect<ArgumentException>(() => api.Configure("http://169.254.1.2:8080"));
+    Expect<ArgumentException>(() => api.Configure("http://8.8.8.8:8080"));
+    Expect<ArgumentException>(() => api.Configure("http://collectionops.example.org:8080"));
+    return Task.CompletedTask;
+}
+
+static async Task ChangingLanModeClearsSession()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    api.Configure("http://192.168.30.60:8080", true);
+    Assert(!api.IsSignedIn, "Switching to the private LAN server must discard the previous token.");
+    Expect<ArgumentException>(() => api.Configure("http://192.168.30.60:8080", false));
+    Assert(api.AllowInsecurePrivateNetwork, "A rejected configuration must not change the saved transport mode.");
 }
 
 static async Task RejectUnexpectedHealth()
