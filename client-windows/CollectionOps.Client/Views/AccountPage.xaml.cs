@@ -49,6 +49,24 @@ public sealed partial class AccountPage : Page
         ShowStatus("Déconnecté de ce client. La session serveur peut être révoquée depuis un autre appareil.", InfoBarSeverity.Informational);
     }
 
+    private async void OnAcceptInvitation(object sender, RoutedEventArgs e)
+    {
+        await RunAsync(async () =>
+        {
+            Api.Configure(ServerAddress.Text);
+            await Api.AcceptInvitationAsync(InvitationLink.Text,
+                Api.IsSignedIn ? null : InvitedName.Text,
+                Api.IsSignedIn ? null : InvitedPassword.Password);
+            InvitationLink.Text = string.Empty;
+            InvitedPassword.Password = string.Empty;
+            ShowStatus(Api.IsSignedIn
+                ? "Invitation acceptée. L'espace est maintenant accessible dans Collection."
+                : "Compte créé et invitation acceptée. Connectez-vous avec votre adresse e-mail et votre mot de passe.",
+                InfoBarSeverity.Success);
+        });
+        InvitedPassword.Password = string.Empty;
+    }
+
     private async void OnRefresh(object sender, RoutedEventArgs e) => await RefreshSessionsAsync();
 
     private async void OnRevoke(object sender, RoutedEventArgs e)

@@ -10,7 +10,10 @@ await ReadCollectionWithSession();
 await TransferUsesExpectedRevision();
 await ReadTransferHistory();
 await ReadInventoryPage();
-Console.WriteLine("SessionApi: 8 checks passed.");
+await AcceptNewAccountInvitationWithoutLeakingTokenToUrl();
+await AcceptExistingAccountInvitationWithSession();
+await RejectInvitationForDifferentServer();
+Console.WriteLine("SessionApi: 11 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -108,6 +111,44 @@ static async Task ReadInventoryPage()
     Assert(page.NextCursor == "9", "The next page cursor must parse.");
     Assert(handler.LastQuery?.Contains("q=Casque%20100%25") == true, "Search text must be URL encoded.");
     Assert(handler.LastQuery?.Contains("after=7") == true && handler.LastQuery.Contains("limit=2"), "Pagination parameters must be sent.");
+}
+
+static async Task AcceptNewAccountInvitationWithoutLeakingTokenToUrl()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    using var api = new SessionApi(handler);
+    api.Configure("https://collectionops.example.org");
+    var id = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var token = new string('A', 43);
+    await api.AcceptInvitationAsync($"collectionops://invite/{id}/{token}?server=https%3A%2F%2Fcollectionops.example.org%2F", "Invité", "test password");
+    Assert(handler.LastPath == $"/api/v1/invitations/{id}/accept", "Invitation route must use the identifier only.");
+    Assert(string.IsNullOrEmpty(handler.LastQuery), "The invitation token must not appear in the HTTP URL.");
+    Assert(handler.LastToken is null, "New-account acceptance must not invent a session token.");
+    Assert(handler.LastBody?.Contains($"\"token\":\"{token}\"") == true, "The invitation token must be sent in the request body.");
+}
+
+static async Task AcceptExistingAccountInvitationWithSession()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"session-secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    using var api = new SessionApi(handler);
+    api.Configure("https://collectionops.example.org");
+    await api.SignInAsync("existing@example.org", "password");
+    var id = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    await api.AcceptInvitationAsync($"collectionops://invite/{id}/{new string('A', 43)}?server=https%3A%2F%2Fcollectionops.example.org%2F", null, null);
+    Assert(handler.LastToken == "session-secret", "Existing-account acceptance must send the session token.");
+    Assert(handler.LastBody?.Contains("\"display_name\":null") == true, "Existing accounts must not try to sign up again.");
+}
+
+static async Task RejectInvitationForDifferentServer()
+{
+    using var api = new SessionApi(new FakeHandler());
+    api.Configure("https://another.example.org");
+    var id = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    await ExpectAsync<InvalidOperationException>(() => api.AcceptInvitationAsync(
+        $"collectionops://invite/{id}/{new string('A', 43)}?server=https%3A%2F%2Fcollectionops.example.org%2F", null, null));
 }
 
 static void Assert(bool condition, string message)

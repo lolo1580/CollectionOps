@@ -16,6 +16,7 @@ public sealed class SessionApi : IDisposable
     public bool IsSignedIn => _token is not null;
     public string? ServerAddress => _server?.ToString();
     public string? CurrentSessionId { get; private set; }
+    public Guid? CurrentAccountId { get; private set; }
 
     public SessionApi(HttpMessageHandler? handler = null)
     {
@@ -81,6 +82,7 @@ public sealed class SessionApi : IDisposable
 
         _token = session.Token;
         CurrentSessionId = session.Session.Id;
+        CurrentAccountId = session.Principal?.Subject;
     }
 
     public async Task<IReadOnlyList<SessionSummary>> GetSessionsAsync()
@@ -105,6 +107,48 @@ public sealed class SessionApi : IDisposable
 
     public Task<CollectionSpace> CreateSpaceAsync(string name) =>
         SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
+
+    public async Task<IReadOnlyList<SpaceInvitation>> GetInvitationsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<InvitationListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/invitations");
+        return result.Invitations;
+    }
+
+    public Task<SpaceInvitation> InviteAsync(Guid spaceId, string email) =>
+        SendJsonAsync<SpaceInvitation>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/invitations", new { email });
+
+    public async Task RevokeInvitationAsync(Guid spaceId, Guid invitationId)
+    {
+        using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/spaces/{spaceId}/invitations/{invitationId}");
+        using var response = await _client.SendAsync(request);
+        await EnsureSuccessAsync(response);
+    }
+
+    public async Task AcceptInvitationAsync(string link, string? name, string? password)
+    {
+        if (!Uri.TryCreate(link.Trim(), UriKind.Absolute, out var uri) ||
+            uri.Scheme != "collectionops" || uri.Host != "invite" ||
+            !uri.Query.StartsWith("?server=", StringComparison.Ordinal) ||
+            !string.IsNullOrEmpty(uri.Fragment))
+            throw new ArgumentException("Collez un lien d'invitation CollectionOps valide.");
+        var server = Uri.UnescapeDataString(uri.Query["?server=".Length..]);
+        if (!Uri.TryCreate(server, UriKind.Absolute, out var expectedServer) ||
+            expectedServer.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(expectedServer.UserInfo) ||
+            !string.IsNullOrEmpty(expectedServer.Query) ||
+            !string.IsNullOrEmpty(expectedServer.Fragment) || expectedServer.AbsolutePath != "/")
+            throw new ArgumentException("Le serveur indiqué dans l'invitation est invalide.");
+        if (_server != expectedServer)
+            throw new InvalidOperationException($"Réglez d'abord l'adresse du serveur sur {expectedServer}.");
+        var parts = uri.AbsolutePath.Trim('/').Split('/');
+        if (parts.Length != 2 || !Guid.TryParse(parts[0], out var id) || parts[1].Length != 43)
+            throw new ArgumentException("Collez un lien d'invitation CollectionOps valide.");
+        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint($"api/v1/invitations/{id}/accept"));
+        if (_token is not null) request.Headers.Add("x-session-token", _token);
+        request.Content = JsonContent.Create(new { token = parts[1], display_name = name, password });
+        using var response = await _client.SendAsync(request);
+        await EnsureSuccessAsync(response);
+    }
 
     public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50)
     {
@@ -151,6 +195,7 @@ public sealed class SessionApi : IDisposable
     {
         _token = null;
         CurrentSessionId = null;
+        CurrentAccountId = null;
     }
 
     public void Dispose() => _client.Dispose();
@@ -202,7 +247,14 @@ public sealed class SessionApi : IDisposable
 
         if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
         {
-            throw new InvalidOperationException("Le serveur n'a pas de base de données disponible.");
+            try
+            {
+                var problem = await response.Content.ReadFromJsonAsync<ProblemResponse>();
+                if (!string.IsNullOrWhiteSpace(problem?.Detail))
+                    throw new InvalidOperationException(problem.Detail);
+            }
+            catch (JsonException) { }
+            throw new InvalidOperationException("Le service est temporairement indisponible.");
         }
 
         try
@@ -236,7 +288,9 @@ public sealed record SessionSummary(
 public sealed record SessionListResponse([property: JsonPropertyName("sessions")] List<SessionSummary> Sessions);
 public sealed record LoginResponse(
     [property: JsonPropertyName("token")] string Token,
-    [property: JsonPropertyName("session")] SessionSummary Session);
+    [property: JsonPropertyName("session")] SessionSummary Session,
+    [property: JsonPropertyName("principal")] SessionPrincipal? Principal);
+public sealed record SessionPrincipal([property: JsonPropertyName("subject")] Guid Subject);
 public sealed record HealthResponse([property: JsonPropertyName("status")] string Status);
 public sealed record ProblemResponse([property: JsonPropertyName("detail")] string? Detail);
 public sealed record CollectionSpace(
@@ -244,6 +298,17 @@ public sealed record CollectionSpace(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("owner_account_id")] Guid OwnerAccountId);
 public sealed record SpaceListResponse([property: JsonPropertyName("spaces")] List<CollectionSpace> Spaces);
+public sealed record SpaceInvitation(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("recipient_email")] string RecipientEmail,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt,
+    [property: JsonPropertyName("accepted_at")] DateTimeOffset? AcceptedAt,
+    [property: JsonPropertyName("revoked_at")] DateTimeOffset? RevokedAt)
+{
+    public string Status => AcceptedAt is not null ? "Acceptée" : RevokedAt is not null ? "Révoquée" : ExpiresAt <= DateTimeOffset.UtcNow ? "Expirée" : "En attente";
+    public bool IsPending => AcceptedAt is null && RevokedAt is null && ExpiresAt > DateTimeOffset.UtcNow;
+}
+public sealed record InvitationListResponse([property: JsonPropertyName("invitations")] List<SpaceInvitation> Invitations);
 public sealed record InventoryItem(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("space_id")] Guid SpaceId,

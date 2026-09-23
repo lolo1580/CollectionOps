@@ -311,8 +311,8 @@ impl fmt::Debug for InvitationTokenFingerprint {
 ///
 /// Normalisation is deliberately conservative: it trims the input and lowercases the domain,
 /// but it does not remove dots or `+tags` from the local part, because those are provider
-/// specific. The comparison policy for invitations and for the future login route still has
-/// to be decided, so this type must not be used as the uniqueness rule on its own.
+/// specific. Database uniqueness and invitation matching use the same case-insensitive
+/// ASCII collation; Unicode e-mail addresses are not yet supported.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EmailAddress(String);
 
@@ -332,6 +332,9 @@ impl EmailAddress {
         }
         if trimmed.len() > MAX_EMAIL_BYTES {
             return Err(EmailAddressError::TooLong);
+        }
+        if !trimmed.is_ascii() {
+            return Err(EmailAddressError::NonAscii);
         }
         if trimmed.chars().any(char::is_whitespace) {
             return Err(EmailAddressError::Whitespace);
@@ -380,6 +383,7 @@ impl fmt::Debug for EmailAddress {
 pub enum EmailAddressError {
     Empty,
     TooLong,
+    NonAscii,
     Whitespace,
     ControlCharacter,
     NotExactlyOneAtSign,
@@ -392,6 +396,7 @@ impl fmt::Display for EmailAddressError {
         let message = match self {
             Self::Empty => "e-mail address must not be empty",
             Self::TooLong => "e-mail address exceeds the RFC 5321 length limit",
+            Self::NonAscii => "non-ASCII e-mail addresses are not yet supported",
             Self::Whitespace => "e-mail address must not contain whitespace",
             Self::ControlCharacter => "e-mail address must not contain control characters",
             Self::NotExactlyOneAtSign => "e-mail address must contain exactly one @",

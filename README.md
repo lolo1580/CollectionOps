@@ -13,7 +13,7 @@ Le projet entre dans sa phase de développement. Le socle initial contient :
 - un [journal des modifications](CHANGELOG.md) maintenu à partir du premier changement.
 - une intégration continue séparée pour le backend Linux et le client Windows.
 
-Aucune infrastructure distante ni intégration S3 n’est créée à ce stade. Deux migrations MariaDB sont versionnées et appliquées au démarrage par le composant SQLx, mais uniquement lorsque `COLLECTIONOPS_DATABASE_URL` est défini.
+Aucune infrastructure distante ni intégration S3 n’est créée à ce stade. Les migrations MariaDB sont versionnées et appliquées au démarrage par SQLx, mais uniquement lorsque `COLLECTIONOPS_DATABASE_URL` est défini.
 
 ## Architecture retenue
 
@@ -68,7 +68,7 @@ Le socle d’autorisation représente séparément les permissions de collection
 
 Les mots de passe utilisent Argon2id et les sessions des jetons opaques de 256 bits ; seule leur empreinte est conservée en base. Les routes de connexion, révocation et expiration sont implémentées.
 
-Les invitations disposent aussi d'un jeton opaque de 256 bits et d'une empreinte distincte. Le parcours d'envoi et d'acceptation n'est pas encore exposé par l'API.
+Les invitations utilisent un jeton opaque de 256 bits ; seule son empreinte est enregistrée. Le lien est à usage unique et expire après sept jours. L'envoi par SMTP et l'acceptation sont exposés par l'API ; aucun secret ne figure dans la réponse de création ou les listes.
 
 ## Espaces, adhésions et autorisation
 
@@ -78,7 +78,7 @@ Chaque opération sur un espace doit vérifier deux choses : une permission appl
 
 Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré de son espace : le transfert de propriété sera une opération distincte et auditée.
 
-Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Les invitations, délégations et réglages avancés restent à développer.
+Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Le propriétaire peut inviter par e-mail, voir les invitations et les révoquer. Un nouvel envoi à la même adresse invalide le lien précédent. L'invité reçoit seulement `collections_read` après acceptation. Le choix de droits supplémentaires, les délégations et les réglages avancés restent à développer.
 
 ## Attribution des numéros d'inventaire
 
@@ -102,11 +102,24 @@ Un mot de passe faux et une adresse inconnue renvoient la **même** réponse `40
 
 Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. Sans base, elles répondent `404` plutôt que d'échouer sur un pool absent.
 
+## Invitations
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| `POST` | `/api/v1/spaces/{space_id}/invitations` | Propriétaire : envoyer une invitation SMTP (`{"email":"..."}`) |
+| `GET` | `/api/v1/spaces/{space_id}/invitations` | Propriétaire : voir les invitations sans jeton |
+| `DELETE` | `/api/v1/spaces/{space_id}/invitations/{invitation_id}` | Propriétaire : révoquer un lien en attente |
+| `POST` | `/api/v1/invitations/{invitation_id}/accept` | Accepter avec `token` ; fournir `display_name` et `password` uniquement pour créer un compte |
+
+Le destinataire avec un compte existant doit se connecter avec l'adresse e-mail invitée, déjà vérifiée. Un destinataire sans compte crée son compte depuis le lien reçu ; la possession du lien prouve alors l'adresse. L'acceptation, la création éventuelle du compte, l'adhésion et les droits sont atomiques. Une invitation expirée, révoquée, déjà acceptée ou adressée à un membre existant ne modifie pas les droits. Les créations, révocations et acceptations sont auditées.
+
+Le lien `collectionops://invite/...?...` se colle dans **Compte → Accepter une invitation** du client Windows. Il n'est pas encore associé automatiquement au protocole Windows ; le collage est nécessaire. Le lien contient l'adresse HTTPS du serveur configurée par l'exploitant, et le client refuse de transmettre le jeton si son adresse de serveur ne correspond pas. Le jeton n'est jamais placé dans une URL HTTP.
+
 ## Démarrer le client Windows
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter avec un compte existant. Dans **Collection**, créer ou choisir un espace, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour le transférer et voir son historique. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour le transférer et voir son historique. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 
@@ -135,10 +148,18 @@ Le test de migration et de provisionnement peut être exécuté sur une base Mar
 | `COLLECTIONOPS_BOOTSTRAP_ADMIN_EMAIL` | Adresse du premier administrateur | aucune |
 | `COLLECTIONOPS_BOOTSTRAP_ADMIN_PASSWORD` | Mot de passe du premier administrateur | aucune |
 | `COLLECTIONOPS_BOOTSTRAP_ADMIN_NAME` | Nom affiché du premier administrateur | adresse e-mail |
+| `COLLECTIONOPS_SMTP_HOST` | Nom DNS du relais SMTP STARTTLS | aucune ; invitations désactivées |
+| `COLLECTIONOPS_SMTP_PORT` | Port STARTTLS du relais | `587` |
+| `COLLECTIONOPS_SMTP_USERNAME` | Identifiant SMTP | aucune |
+| `COLLECTIONOPS_SMTP_PASSWORD` | Secret SMTP | aucune |
+| `COLLECTIONOPS_SMTP_FROM` | Adresse expéditrice SMTP | aucune |
+| `COLLECTIONOPS_PUBLIC_URL` | Origine HTTPS du backend vue par le client Windows ; liée au lien d'invitation | aucune |
 
 Sans `COLLECTIONOPS_DATABASE_URL`, le service démarre sans persistance et n'ouvre aucune connexion. Dès qu'elle est définie, la connexion devient obligatoire : si MariaDB est injoignable ou si une migration échoue, le backend refuse de démarrer. Les migrations sont appliquées au démarrage, ce que suppose une seule instance pour l'instant.
 
 Le premier administrateur n'est créé que si aucun compte ne porte déjà le drapeau d'administration ; l'opération est donc idempotente et peut rester dans la configuration. Les deux variables `EMAIL` et `PASSWORD` vont de pair : n'en définir qu'une seule fait échouer le démarrage. Le mot de passe est haché avec Argon2id avant d'atteindre MariaDB et n'apparaît ni en base ni dans les journaux. Le compte est marqué comme vérifié, puisqu'il est créé par l'exploitant.
+
+Les quatre variables SMTP obligatoires et `COLLECTIONOPS_PUBLIC_URL` doivent être définies ensemble, sinon le démarrage échoue. Le transport impose STARTTLS et un délai de 15 secondes. Sans configuration SMTP, le serveur reste utilisable mais la création d'invitations est indisponible. La réponse `201` signifie que le relais a accepté le message, pas que la boîte destinataire l'a livré. Aucun mot de passe SMTP ne doit être ajouté au dépôt.
 
 ## Durées de session
 

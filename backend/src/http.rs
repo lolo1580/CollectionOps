@@ -16,11 +16,16 @@ use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    credentials::{EmailAddress, IdleTimeout, PasswordService, SessionToken, SessionTokenError},
+    credentials::{
+        EmailAddress, IdleTimeout, InvitationToken, PasswordService, SessionToken,
+        SessionTokenError,
+    },
     database::{
         Database, DatabaseError, InventoryError, IssuedSession, Item, ItemTransfer, SessionError,
         SessionRecord, Space, SpaceError, TransferOutcome,
     },
+    invitations::{Invitation, InvitationError},
+    mail::SmtpDelivery,
     security::{Permission, Principal},
 };
 
@@ -121,6 +126,7 @@ impl From<SessionRecord> for SessionSummary {
 struct AppState {
     database: Option<Arc<Database>>,
     passwords: Arc<PasswordService>,
+    mail: Option<Arc<SmtpDelivery>>,
 }
 
 struct ApiError {
@@ -256,6 +262,21 @@ impl ApiError {
                 detail: "La persistance n'est pas configurée sur ce déploiement.".to_owned(),
                 instance: instance.to_owned(),
                 code: "persistence_unavailable",
+            },
+        }
+    }
+
+    fn mail_unavailable(instance: &str) -> Self {
+        let status = StatusCode::SERVICE_UNAVAILABLE;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Envoi indisponible",
+                status: status.as_u16(),
+                detail: "L'envoi des invitations n'est pas configuré sur ce serveur.".to_owned(),
+                instance: instance.to_owned(),
+                code: "mail_unavailable",
             },
         }
     }
@@ -610,6 +631,217 @@ pub struct SpaceListResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateSpaceRequest {
     pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateInvitationRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct InvitationResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub recipient_email: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub accepted_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+impl From<Invitation> for InvitationResponse {
+    fn from(value: Invitation) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            recipient_email: value.recipient_email,
+            created_at: value.created_at.to_rfc3339(),
+            expires_at: value.expires_at.to_rfc3339(),
+            accepted_at: value.accepted_at.map(|d| d.to_rfc3339()),
+            revoked_at: value.revoked_at.map(|d| d.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct InvitationListResponse {
+    pub invitations: Vec<InvitationResponse>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct AcceptInvitationRequest {
+    pub token: String,
+    pub display_name: Option<String>,
+    pub password: Option<String>,
+}
+
+fn invitation_error(error: &InvitationError, instance: &str) -> ApiError {
+    match error {
+        InvitationError::NotFound | InvitationError::NotOwner => {
+            ApiError::resource_not_found(instance)
+        }
+        InvitationError::AlreadyMember => ApiError::invalid_request(
+            instance,
+            "Cette personne est déjà membre de l'espace.",
+            "already_member",
+        ),
+        InvitationError::ExistingAccountRequiresLogin => {
+            ApiError::authentication_required(instance)
+        }
+        InvitationError::AccountMismatch => ApiError::forbidden(instance),
+        InvitationError::InvalidAccount => {
+            ApiError::invalid_request(instance, "Nom ou mot de passe invalide.", "invalid_account")
+        }
+        InvitationError::Storage(_) | InvitationError::TokenGeneration => {
+            ApiError::internal(instance)
+        }
+    }
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/invitations", tag = "sharing",
+    request_body = CreateInvitationRequest,
+    responses((status = 201, body = InvitationResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails), (status = 503, body = ProblemDetails)))]
+async fn create_invitation(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateInvitationRequest>,
+) -> Result<(StatusCode, Json<InvitationResponse>), ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let mail = state
+        .mail
+        .as_deref()
+        .ok_or_else(|| ApiError::mail_unavailable(uri.path()))?;
+    let email = EmailAddress::parse(&payload.email).map_err(|_| {
+        ApiError::invalid_request(uri.path(), "Adresse e-mail invalide.", "invalid_email")
+    })?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if space.owner_account_id != principal.subject {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let issued = db
+        .issue_invitation(space_id, principal.subject, &email)
+        .await
+        .map_err(|e| invitation_error(&e, uri.path()))?;
+    if mail
+        .send_invitation(email.as_str(), &space.name, &issued.link())
+        .await
+        .is_err()
+    {
+        // A relay error invalidates the unsent link. The error response never exposes it.
+        if let Err(error) = db
+            .revoke_invitation(space_id, issued.invitation.id, principal.subject)
+            .await
+        {
+            tracing::error!(?error, "failed to revoke invitation after SMTP failure");
+        }
+        return Err(ApiError::internal(uri.path()));
+    }
+    Ok((StatusCode::CREATED, Json(issued.invitation.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/invitations", tag = "sharing",
+    responses((status = 200, body = InvitationListResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_invitations(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<InvitationListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let invitations = db
+        .list_invitations(space_id, principal.subject)
+        .await
+        .map_err(|e| invitation_error(&e, uri.path()))?;
+    Ok(Json(InvitationListResponse {
+        invitations: invitations.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(delete, path = "/api/v1/spaces/{space_id}/invitations/{invitation_id}", tag = "sharing",
+    responses((status = 204), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn revoke_invitation(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, invitation_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    db.revoke_invitation(space_id, invitation_id, principal.subject)
+        .await
+        .map_err(|e| invitation_error(&e, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/api/v1/invitations/{invitation_id}/accept", tag = "sharing",
+    request_body = AcceptInvitationRequest,
+    responses((status = 204), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn accept_invitation(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(invitation_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<AcceptInvitationRequest>,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let token = InvitationToken::parse(payload.token)
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    let signed_in = if headers.contains_key(SESSION_TOKEN_HEADER) {
+        Some(
+            authenticated_headers(db, &headers, uri.path())
+                .await?
+                .subject,
+        )
+    } else {
+        None
+    };
+    let new_account = match (payload.display_name.as_deref(), payload.password.as_deref()) {
+        (None, None) => None,
+        (Some(name), Some(password)) => Some((name, password)),
+        _ => {
+            return Err(ApiError::invalid_request(
+                uri.path(),
+                "Nom et mot de passe sont requis ensemble.",
+                "invalid_account",
+            ));
+        }
+    };
+    if signed_in.is_some() && new_account.is_some() {
+        return Err(ApiError::invalid_request(
+            uri.path(),
+            "Un compte connecté ne doit pas fournir de nouveau mot de passe.",
+            "invalid_account",
+        ));
+    }
+    db.accept_invitation(
+        invitation_id,
+        &token,
+        signed_in,
+        new_account,
+        &state.passwords,
+    )
+    .await
+    .map_err(|e| invitation_error(&e, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1077,7 +1309,11 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_item,
         get_item,
         transfer_item,
-        list_item_transfers
+        list_item_transfers,
+        create_invitation,
+        list_invitations,
+        revoke_invitation,
+        accept_invitation
     ),
     components(schemas(
         HealthResponse,
@@ -1089,6 +1325,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         LoginRequest,
         LoginResponse,
         SpaceResponse, SpaceListResponse, CreateSpaceRequest,
+        CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         ItemResponse, ItemListResponse, CreateItemRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         IdleTimeout,
@@ -1098,7 +1335,8 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
     tags(
         (name = "system", description = "État et métadonnées du service"),
         (name = "authentication", description = "Session et identité applicative"),
-        (name = "collection", description = "Espaces et inventaire")
+        (name = "collection", description = "Espaces et inventaire"),
+        (name = "sharing", description = "Invitations et partage des espaces")
     )
 )]
 pub struct ApiDoc;
@@ -1148,14 +1386,21 @@ pub fn app() -> Router {
     app_with_state(AppState {
         database: None,
         passwords: Arc::new(PasswordService::default()),
+        mail: None,
     })
 }
 
 /// Builds the `CollectionOps` HTTP router with persistence enabled.
 pub fn app_with_database(database: Database) -> Router {
+    app_with_database_and_mail(database, None)
+}
+
+/// Builds the persistent router with optional SMTP delivery for invitations.
+pub fn app_with_database_and_mail(database: Database, mail: Option<SmtpDelivery>) -> Router {
     app_with_state(AppState {
         database: Some(Arc::new(database)),
         passwords: Arc::new(PasswordService::default()),
+        mail: mail.map(Arc::new),
     })
 }
 
@@ -1176,6 +1421,18 @@ fn app_with_state(state: AppState) -> Router {
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/items"),
                 get(list_items).post(create_item),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/invitations"),
+                get(list_invitations).post(create_invitation),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/invitations/{{invitation_id}}"),
+                delete(revoke_invitation),
+            )
+            .route(
+                &format!("{API_PREFIX}/invitations/{{invitation_id}}/accept"),
+                post(accept_invitation),
             )
             .route(&format!("{API_PREFIX}/items/{{item_id}}"), get(get_item))
             .route(

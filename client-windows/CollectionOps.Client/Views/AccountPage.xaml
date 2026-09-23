@@ -23,6 +23,13 @@
             </StackPanel>
             <TextBlock Text="La session de ce client n'est pas enregistrée sur le disque. Le serveur applique un délai d'inactivité de 30 minutes." TextWrapping="Wrap" Opacity="0.7" />
 
+            <TextBlock Text="Accepter une invitation" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Collez le lien reçu par e-mail. Si vous possédez déjà un compte, connectez-vous d'abord avec l'adresse invitée. Sinon, renseignez un nom et un mot de passe pour créer votre compte." TextWrapping="Wrap" />
+            <TextBox x:Name="InvitationLink" Header="Lien d'invitation" PlaceholderText="collectionops://invite/..." />
+            <TextBox x:Name="InvitedName" Header="Nom affiché (nouveau compte uniquement)" />
+            <PasswordBox x:Name="InvitedPassword" Header="Mot de passe (nouveau compte uniquement)" />
+            <Button x:Name="AcceptInvitationButton" Content="Accepter l'invitation" Click="OnAcceptInvitation" Style="{StaticResource AccentButtonStyle}" />
+
             <TextBlock Text="Appareils connectés" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <Button x:Name="RefreshButton" Content="Actualiser les sessions" Click="OnRefresh" IsEnabled="False" />
             <ListView x:Name="SessionsList" SelectionMode="None">

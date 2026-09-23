@@ -3,7 +3,9 @@ use std::error::Error;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-use collectionops_backend::{AppConfig, Database, PasswordService, app, app_with_database};
+use collectionops_backend::{
+    AppConfig, Database, PasswordService, SmtpDelivery, app, app_with_database_and_mail,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,6 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let config = AppConfig::from_env()?;
+    let mail = SmtpDelivery::from_env()?;
 
     // Persistence is optional at this stage, but a configured database is a hard startup
     // requirement: starting without it would advertise readiness the service cannot honour.
@@ -36,7 +39,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             warn!("no bootstrap administrator configured");
         }
 
-        app_with_database(database)
+        if mail.is_none() {
+            warn!("SMTP is not configured: space invitations are disabled");
+        }
+        app_with_database_and_mail(database, mail)
     } else {
         warn!("COLLECTIONOPS_DATABASE_URL is not set: starting without persistence");
         app()

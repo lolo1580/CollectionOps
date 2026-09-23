@@ -14,7 +14,7 @@ Le numéro d'inventaire et la révision sont des chaînes décimales positives d
 
 ## Espaces et listes
 
-`GET /api/v1/spaces` retourne `{"spaces":[...]}` avec les seuls espaces où le compte possède une adhésion et le droit explicite `collections_read`. `POST /api/v1/spaces` reçoit `{"name":"Ma collection"}` et crée un espace personnel (`201`) avec droits explicites `collections_read` et `collections_write` pour son propriétaire. La création d'espaces partagés et les invitations ne font pas partie de cette tranche.
+`GET /api/v1/spaces` retourne `{"spaces":[...]}` avec les seuls espaces où le compte possède une adhésion et le droit explicite `collections_read`. `POST /api/v1/spaces` reçoit `{"name":"Ma collection"}` et crée un espace personnel (`201`) avec droits explicites `collections_read` et `collections_write` pour son propriétaire. Le partage par invitation SMTP est désormais disponible ; voir le README pour ses routes et limites. La création d'un espace partagé distinct reste à définir.
 
 `GET /api/v1/spaces/{space_id}/items` retourne `{"items":[...],"next_cursor":null}` trié par numéro d'inventaire. L'accès requiert une session, une adhésion et `collections_read`. Un membre sans droit reçoit `403`, un non-membre reçoit `404`. La taille de page `limit` vaut 50 par défaut et doit rester entre 1 et 100. `after` est le dernier numéro d'inventaire de la page précédente ; `next_cursor` contient ce numéro comme chaîne quand une autre page existe. `q` cherche une sous-chaîne dans le nom ; `%` et `_` sont des caractères ordinaires, pas des jokers. Une recherche vide liste tous les objets. Un curseur invalide, une limite hors plage ou une recherche de plus de 100 caractères reçoit `422`.
 
@@ -57,4 +57,4 @@ Le backend vérifie d'abord les droits dans les deux espaces. La transaction ver
 
 ## Hors de cette première tranche
 
-La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
+La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations de base sont exposées depuis le 2026-09-23 ; le choix de droits, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.

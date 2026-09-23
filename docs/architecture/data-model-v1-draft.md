@@ -1,7 +1,7 @@
 # Modèle conceptuel du premier lot V1 — brouillon
 
 - Statut : proposition technique fondée sur D01 à D04 et D11 à D15 du [cahier des charges](../product/cahier-des-charges-v1.md).
-- Périmètre : comptes, espaces, appartenance et objets. Une première migration MariaDB couvre ce noyau ; l'identité e-mail, les invitations, les sessions et la suppression définitive nécessitent encore des décisions complémentaires.
+- Périmètre : comptes, espaces, appartenance et objets. Les migrations MariaDB couvrent désormais aussi l'identité e-mail, les sessions et les invitations de base. Le choix de droits à l'invitation et la suppression définitive demandent encore des décisions complémentaires.
 
 ## Entités et cardinalités
 
@@ -50,23 +50,23 @@ La forme du jeton et le contenu du `Principal` ne doivent pas être utilisés co
 
 **État : implémenté et couvert par des tests.** `create_space`, `membership`, `add_member`, `set_member_permissions`, `remove_member` et `space_members` existent, et les tests appellent réellement `require_space_permission` après avoir chargé l'adhésion depuis la base. Aucune route HTTP correspondante n'est encore exposée.
 
-La création d'un espace établit ensemble l'espace, la ligne de compteur et l'adhésion du propriétaire avec `collections_write`. Le propriétaire ne reçoit **aucun** droit financier : la propriété n'implique rien au-delà de l'écriture de collection, et aucune permission globale ne peut être stockée comme droit d'espace.
+La création d'un espace établit ensemble l'espace, la ligne de compteur et l'adhésion du propriétaire avec `collections_read` et `collections_write`. Le propriétaire ne reçoit **aucun** droit financier, et aucune permission globale ne peut être stockée comme droit d'espace.
 
-## Questions bloquant le schéma physique et les contrats API
+## Questions restantes pour les extensions
 
-- Quelle politique de normalisation et de vérification des adresses e-mail appliquer aux comptes et invitations, et par quel canal envoyer les liens ?
+- Faut-il étendre la politique actuelle (ASCII, domaine mis en minuscules, unicité insensible à la casse) pour gérer les adresses internationales, et comment vérifier les comptes préexistants non vérifiés ?
 - Le propriétaire peut-il déléguer la gestion des membres et des droits financiers, hors création d'invitations réservée au propriétaire ?
 - Quelles sont les règles de suppression et de conservation des espaces, objets, comptes et invitations ?
 
-Ces réponses précèdent les migrations complémentaires et les routes de comptes et invitations. Les transactions et contraintes ci-dessus servent de critères de revue pour les dépôts et routes à venir.
+Ces réponses guident les migrations et routes complémentaires. La première tranche d'invitations utilise SMTP et un lien à coller dans le client Windows ; les droits sont pour l'instant fixés à `collections_read`. Les transactions et contraintes ci-dessus restent des critères de revue pour les extensions à venir.
 
-La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail, l'empreinte Argon2id du mot de passe et l'horodatage de vérification, et la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions par appareil. Le composant SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini, et le premier administrateur est provisionné de façon idempotente. Les invitations restent isolées dans un [brouillon SQL distinct](../schema/invitations-draft.sql), à convertir en migration après la définition de l'identité e-mail, du parcours de compte et de l'audit.
+La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail et les mots de passe, la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions, et la [migration des invitations](../../backend/migrations/202609230001_space_invitations.sql) ajoute les liens, droits et événements d'audit. SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini. Le [brouillon SQL](../schema/invitations-draft.sql) reste une référence de conception, non une migration à exécuter.
 
 ## Invitation et acceptation
 
-Le serveur génère un jeton opaque de 256 bits avec le générateur cryptographique du système, l'envoie au destinataire et ne conserve que son empreinte SHA-256. Le lien contient l'identifiant de l'invitation et le jeton ; il est construit depuis une origine configurée, jamais depuis un en-tête `Host` fourni par la requête. Les journaux ne contiennent ni jeton ni URL complète.
+Le serveur génère un jeton opaque de 256 bits avec le générateur cryptographique du système, l'envoie au destinataire et ne conserve que son empreinte SHA-256. Le lien `collectionops://invite/...` contient l'identifiant de l'invitation, le jeton et l'origine HTTPS `COLLECTIONOPS_PUBLIC_URL` configurée côté serveur ; il n'utilise jamais l'en-tête `Host` fourni par la requête. Le client vérifie que son adresse de serveur correspond à celle du lien et transmet le jeton dans le corps de la requête d'acceptation, pas dans l'URL HTTP. Les journaux ne contiennent ni jeton ni URL complète.
 
-À l'acceptation, une transaction verrouille l'invitation, compare le jeton, vérifie son expiration et ses états, puis vérifie que le compte contrôle l'adresse visée. Si le compte n'existe pas, sa création et la preuve de l'adresse font partie du parcours à définir. Si le compte est déjà membre, l'acceptation échoue sans modifier ses droits. Sinon, la transaction crée l'adhésion, copie les droits choisis depuis `space_invitation_grants` vers `space_permission_grants` et marque l'invitation acceptée ensemble. Une seconde tentative sur le même lien échoue sans ajouter de droits. Les droits d'invitation ne sont jamais pris depuis les valeurs par défaut courantes au moment de l'acceptation.
+À l'acceptation, une transaction verrouille l'invitation, compare le jeton, vérifie son expiration et ses états, puis vérifie que le compte contrôle l'adresse visée. Si le compte n'existe pas, la possession du lien reçu par e-mail permet sa création et marque l'adresse vérifiée dans la même transaction. Si le compte est déjà membre, l'acceptation échoue sans modifier ses droits. Sinon, la transaction crée l'adhésion, copie les droits conservés dans `space_invitation_grants` vers `space_permission_grants` et marque l'invitation acceptée ensemble. Une seconde tentative sur le même lien échoue sans ajouter de droits. Les droits d'invitation ne sont jamais pris depuis les valeurs par défaut courantes au moment de l'acceptation.
 
 La création et la réémission verrouillent la ligne de l'espace pour sérialiser les invitations vers la même adresse. La réémission révoque l'invitation active précédente, insère une nouvelle invitation et journalise l'opération dans la même transaction. La révocation prend effet avant tout envoi d'un nouveau lien. Le service ne doit pas accepter un lien expiré même si un nettoyage différé laisse sa ligne en base.
 

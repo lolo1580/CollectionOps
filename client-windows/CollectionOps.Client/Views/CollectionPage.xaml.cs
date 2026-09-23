@@ -54,6 +54,7 @@ public sealed partial class CollectionPage : Page
             UpdateDestinationOptions();
             TransferHistory.ItemsSource = null;
             await RefreshItemsCoreAsync();
+            await RefreshInvitationsCoreAsync();
         });
     }
 
@@ -121,6 +122,46 @@ public sealed partial class CollectionPage : Page
         });
     }
 
+    private async void OnInvite(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(InviteEmail.Text))
+        {
+            ShowStatus("Choisissez un espace et une adresse e-mail.", InfoBarSeverity.Warning);
+            return;
+        }
+        await RunAsync(async () =>
+        {
+            await Api.InviteAsync(space.Id, InviteEmail.Text.Trim());
+            InviteEmail.Text = string.Empty;
+            await RefreshInvitationsCoreAsync();
+            ShowStatus("Invitation transmise au serveur SMTP.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnRefreshInvitations(object sender, RoutedEventArgs e) =>
+        await RunAsync(RefreshInvitationsCoreAsync);
+
+    private async void OnRevokeInvitation(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || sender is not Button { Tag: Guid invitationId }) return;
+        await RunAsync(async () =>
+        {
+            await Api.RevokeInvitationAsync(space.Id, invitationId);
+            await RefreshInvitationsCoreAsync();
+            ShowStatus("Invitation révoquée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async Task RefreshInvitationsCoreAsync()
+    {
+        var space = ActiveSpace;
+        SharingPanel.Visibility = space is not null && space.OwnerAccountId == Api.CurrentAccountId
+            ? Visibility.Visible : Visibility.Collapsed;
+        Invitations.ItemsSource = null;
+        if (SharingPanel.Visibility == Visibility.Visible && space is not null)
+            Invitations.ItemsSource = await Api.GetInvitationsAsync(space.Id);
+    }
+
     private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id));
 
     private async Task LoadSpacesAsync(Guid? selectedId)
@@ -141,6 +182,7 @@ public sealed partial class CollectionPage : Page
             ShowStatus("Aucun espace visible. Créez votre premier espace.", InfoBarSeverity.Informational);
         }
         else await RefreshItemsCoreAsync();
+        await RefreshInvitationsCoreAsync();
         UpdateButtons();
     }
 
@@ -189,6 +231,8 @@ public sealed partial class CollectionPage : Page
         LoadMoreButton.IsEnabled = false;
         TransferButton.IsEnabled = false;
         RefreshHistoryButton.IsEnabled = false;
+        InviteButton.IsEnabled = false;
+        RefreshInvitationsButton.IsEnabled = false;
         try { await action(); }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
@@ -207,6 +251,8 @@ public sealed partial class CollectionPage : Page
         LoadMoreButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _nextCursor is not null;
         TransferButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && DestinationSpaces.ItemsSource is not null;
         RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        InviteButton.IsEnabled = SharingPanel.Visibility == Visibility.Visible;
+        RefreshInvitationsButton.IsEnabled = SharingPanel.Visibility == Visibility.Visible;
     }
 
     private void ShowStatus(string message, InfoBarSeverity severity)
