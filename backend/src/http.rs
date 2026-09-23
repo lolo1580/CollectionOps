@@ -25,6 +25,7 @@ use crate::{
         ItemStateEvent, ItemTransfer, MemberWithAccount, SessionError, SessionRecord, Space,
         SpaceError, TransferOutcome,
     },
+    groups::{GroupError, InventoryGroup},
     invitations::{Invitation, InvitationError},
     locations::{ItemLocationEvent, Location, LocationError},
     mail::SmtpDelivery,
@@ -168,7 +169,7 @@ impl ApiError {
                 type_url: "about:blank",
                 title: "Conflit de revision",
                 status: status.as_u16(),
-                detail: "L'objet a change depuis sa derniere lecture. Actualisez-le avant de recommencer."
+                detail: "La ressource a change depuis sa derniere lecture. Actualisez-la avant de recommencer."
                     .to_owned(),
                 instance: instance.to_owned(),
                 code: "revision_conflict",
@@ -823,6 +824,85 @@ fn location_error(error: &LocationError, instance: &str) -> ApiError {
     }
 }
 
+fn group_error(error: &GroupError, instance: &str) -> ApiError {
+    match error {
+        GroupError::InvalidName | GroupError::InvalidKind => ApiError::invalid_request(
+            instance,
+            "Nom ou type de regroupement invalide.",
+            "invalid_group",
+        ),
+        GroupError::DuplicateName => {
+            ApiError::conflict(instance, "Ce nom existe deja.", "duplicate_name")
+        }
+        GroupError::GroupNotEmpty => ApiError::conflict(
+            instance,
+            "Retirez les objets de ce regroupement avant de le supprimer.",
+            "group_not_empty",
+        ),
+        GroupError::SpaceNotFound
+        | GroupError::ItemNotFound
+        | GroupError::GroupNotFound
+        | GroupError::InvalidGroup => ApiError::resource_not_found(instance),
+        GroupError::RevisionConflict => ApiError::revision_conflict(instance),
+        GroupError::ItemInTrash => ApiError::invalid_request(
+            instance,
+            "Restaurez l'objet avant de le classer.",
+            "invalid_state",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct GroupResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub revision: String,
+    pub created_at: String,
+}
+impl From<InventoryGroup> for GroupResponse {
+    fn from(value: InventoryGroup) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            kind: value.kind,
+            name: value.name,
+            revision: value.revision.to_string(),
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct GroupListResponse {
+    pub groups: Vec<GroupResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateGroupRequest {
+    pub kind: String,
+    pub name: String,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RenameGroupRequest {
+    pub name: String,
+    pub expected_revision: String,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DeleteGroupRequest {
+    pub expected_revision: String,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemGroupListResponse {
+    pub revision: String,
+    pub groups: Vec<GroupResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ReplaceItemGroupsRequest {
+    pub group_ids: Vec<Uuid>,
+    pub expected_revision: String,
+}
+
 fn taxonomy_error(error: &TaxonomyError, instance: &str) -> ApiError {
     match error {
         TaxonomyError::InvalidName | TaxonomyError::InvalidFieldType => ApiError::invalid_request(
@@ -1304,12 +1384,261 @@ async fn accept_invitation(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/groups", tag = "collection",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = GroupListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails)))]
+async fn list_groups(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<GroupListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let groups = db
+        .groups_in_space(space_id)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok(Json(GroupListResponse {
+        groups: groups.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/groups", tag = "collection",
+    request_body = CreateGroupRequest,
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 201, body = GroupResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 409, body = ProblemDetails),
+        (status = 422, body = ProblemDetails)))]
+async fn create_group(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateGroupRequest>,
+) -> Result<(StatusCode, Json<GroupResponse>), ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let group = db
+        .create_group(space_id, &payload.kind, &payload.name)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(group.into())))
+}
+
+fn parse_group_revision(value: &str, instance: &str) -> Result<u64, ApiError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(instance, "Revision invalide.", "invalid_revision")
+        })
+}
+
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/groups/{group_id}", tag = "collection",
+    request_body = RenameGroupRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("group_id" = Uuid, Path, description = "Serie ou regroupement")),
+    responses((status = 200, body = GroupResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn rename_group(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, group_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<RenameGroupRequest>,
+) -> Result<Json<GroupResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let revision = parse_group_revision(&payload.expected_revision, uri.path())?;
+    let group = db
+        .rename_group(space_id, group_id, &payload.name, revision)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok(Json(group.into()))
+}
+
+#[utoipa::path(delete, path = "/api/v1/spaces/{space_id}/groups/{group_id}", tag = "collection",
+    request_body = DeleteGroupRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("group_id" = Uuid, Path, description = "Serie ou regroupement")),
+    responses((status = 204, description = "Regroupement vide supprime"),
+        (status = 401, body = ProblemDetails), (status = 403, body = ProblemDetails),
+        (status = 404, body = ProblemDetails), (status = 409, body = ProblemDetails)))]
+async fn delete_group(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, group_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<DeleteGroupRequest>,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let revision = parse_group_revision(&payload.expected_revision, uri.path())?;
+    db.delete_group(space_id, group_id, revision)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/groups", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemGroupListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_item_groups(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemGroupListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = db
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        db,
+        &principal,
+        item.space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let groups = db
+        .item_groups(item_id)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok(Json(ItemGroupListResponse {
+        revision: item.revision.to_string(),
+        groups: groups.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(put, path = "/api/v1/items/{item_id}/groups", tag = "collection",
+    request_body = ReplaceItemGroupsRequest,
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemGroupListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn replace_item_groups(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ReplaceItemGroupsRequest>,
+) -> Result<Json<ItemGroupListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = db
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        db,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(uri.path(), "Revision invalide.", "invalid_revision")
+        })?;
+    if payload.group_ids.len() > 50 {
+        return Err(ApiError::invalid_request(
+            uri.path(),
+            "Choisissez au plus 50 regroupements.",
+            "invalid_groups",
+        ));
+    }
+    let revision = db
+        .replace_item_groups(item_id, &payload.group_ids, expected_revision)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    let groups = db
+        .item_groups(item_id)
+        .await
+        .map_err(|error| group_error(&error, uri.path()))?;
+    Ok(Json(ItemGroupListResponse {
+        revision: revision.to_string(),
+        groups: groups.into_iter().map(Into::into).collect(),
+    }))
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ItemResponse {
     pub id: Uuid,
     pub space_id: Uuid,
     pub inventory_number: String,
     pub name: String,
+    pub description: Option<String>,
+    pub historical_reference: Option<String>,
+    pub technical_reference: Option<String>,
     pub state: String,
     pub revision: String,
     pub created_at: String,
@@ -1321,6 +1650,9 @@ impl From<Item> for ItemResponse {
             space_id: value.space_id,
             inventory_number: value.inventory_number.to_string(),
             name: value.name,
+            description: value.description,
+            historical_reference: value.historical_reference,
+            technical_reference: value.technical_reference,
             state: value.state.as_str().to_owned(),
             revision: value.revision.to_string(),
             created_at: value.created_at.to_rfc3339(),
@@ -1341,6 +1673,7 @@ struct ListItemsQuery {
     state: Option<String>,
     category_id: Option<String>,
     location_id: Option<String>,
+    group_id: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateItemRequest {
@@ -1355,6 +1688,14 @@ pub struct ItemStateRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenameItemRequest {
     pub name: String,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateItemDetailsRequest {
+    pub description: Option<String>,
+    pub historical_reference: Option<String>,
+    pub technical_reference: Option<String>,
     pub expected_revision: String,
 }
 
@@ -2049,7 +2390,8 @@ async fn set_item_field_value(
         ("limit" = Option<u32>, Query, description = "Taille de page, de 1 a 100"),
         ("state" = Option<String>, Query, description = "Etat: active (defaut), archived, trashed ou all"),
         ("category_id" = Option<Uuid>, Query, description = "Categorie et sous-categories"),
-        ("location_id" = Option<Uuid>, Query, description = "Emplacement et descendants")),
+        ("location_id" = Option<Uuid>, Query, description = "Emplacement et descendants"),
+        ("group_id" = Option<Uuid>, Query, description = "Serie ou regroupement")),
     responses((status = 200, body = ItemListResponse), (status = 401, body = ProblemDetails),
         (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
 #[allow(clippy::too_many_lines)]
@@ -2139,6 +2481,20 @@ async fn list_items(
             .await
             .map_err(|error| location_error(&error, uri.path()))?;
     }
+    let group_id = query
+        .group_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| {
+            ApiError::invalid_request(uri.path(), "Regroupement invalide.", "invalid_group")
+        })?;
+    if let Some(group_id) = group_id {
+        database
+            .group(space_id, group_id)
+            .await
+            .map_err(|error| group_error(&error, uri.path()))?;
+    }
     let mut items = database
         .search_items_in_space(
             space_id,
@@ -2149,6 +2505,7 @@ async fn list_items(
             ItemSearchFilters {
                 category_id,
                 location_id,
+                group_id,
             },
         )
         .await
@@ -2296,6 +2653,74 @@ async fn rename_item(
             _ => ApiError::internal(uri.path()),
         })?;
     Ok(Json(item.into()))
+}
+
+#[utoipa::path(put, path = "/api/v1/items/{item_id}/details", tag = "collection",
+    request_body = UpdateItemDetailsRequest,
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn update_item_details(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateItemDetailsRequest>,
+) -> Result<Json<ItemResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(uri.path(), "Revision invalide.", "invalid_revision")
+        })?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let updated = database
+        .update_item_details(
+            item_id,
+            payload.description.as_deref(),
+            payload.historical_reference.as_deref(),
+            payload.technical_reference.as_deref(),
+            expected_revision,
+        )
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::InvalidDetails) => ApiError::invalid_request(
+                uri.path(),
+                "Description ou reference trop longue.",
+                "invalid_details",
+            ),
+            Some(InventoryError::RevisionConflict) => ApiError::revision_conflict(uri.path()),
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            Some(InventoryError::InvalidState) => ApiError::invalid_request(
+                uri.path(),
+                "Restaurez l'objet avant de le modifier.",
+                "invalid_state",
+            ),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok(Json(updated.into()))
 }
 
 /// Parses the expected revision, loads the item, checks space write access and applies a state.
@@ -2639,6 +3064,12 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_category_field,
         list_locations,
         create_location,
+        list_groups,
+        create_group,
+        rename_group,
+        delete_group,
+        list_item_groups,
+        replace_item_groups,
         get_item_location,
         move_item_location,
         list_item_location_events,
@@ -2651,6 +3082,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_item,
         get_item,
         rename_item,
+        update_item_details,
         archive_item,
         trash_item,
         restore_item,
@@ -2678,13 +3110,15 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         CategoryResponse, CategoryListResponse, CreateCategoryRequest,
         CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest,
         LocationResponse, LocationListResponse, CreateLocationRequest,
+        GroupResponse, GroupListResponse, CreateGroupRequest, RenameGroupRequest, DeleteGroupRequest,
+        ItemGroupListResponse, ReplaceItemGroupsRequest,
         ItemLocationResponse, MoveItemLocationRequest,
         ItemLocationEventResponse, ItemLocationEventListResponse,
         ItemCategoryResponse, ItemCategoryListResponse, AddItemCategoriesRequest,
         EffectiveFieldResponse, EffectiveFieldListResponse, SetItemFieldValueRequest,
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
-        ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, ItemStateRequest,
+        ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, UpdateItemDetailsRequest, ItemStateRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         ItemStateEventResponse, ItemStateEventListResponse,
         IdleTimeout,
@@ -2805,6 +3239,26 @@ fn location_routes() -> Router<AppState> {
         )
 }
 
+fn group_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            &format!("{API_PREFIX}/items/{{item_id}}/details"),
+            axum::routing::put(update_item_details),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/groups"),
+            get(list_groups).post(create_group),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/groups/{{group_id}}"),
+            axum::routing::patch(rename_group).delete(delete_group),
+        )
+        .route(
+            &format!("{API_PREFIX}/items/{{item_id}}/groups"),
+            get(list_item_groups).put(replace_item_groups),
+        )
+}
+
 fn app_with_state(state: AppState) -> Router {
     let authentication = if state.database.is_some() {
         // Login is only reachable when a pool exists, so no handler has to cope with `None`.
@@ -2821,6 +3275,7 @@ fn app_with_state(state: AppState) -> Router {
             )
             .merge(taxonomy_routes())
             .merge(location_routes())
+            .merge(group_routes())
             .route(
                 &format!("{API_PREFIX}/admin/spaces"),
                 get(list_admin_spaces),

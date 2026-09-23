@@ -117,6 +117,9 @@ pub struct Item {
     pub space_id: Uuid,
     pub inventory_number: u64,
     pub name: String,
+    pub description: Option<String>,
+    pub historical_reference: Option<String>,
+    pub technical_reference: Option<String>,
     pub state: ItemState,
     pub revision: u64,
     pub created_by_account_id: Uuid,
@@ -139,6 +142,7 @@ pub struct ItemTransfer {
 pub struct ItemSearchFilters {
     pub category_id: Option<Uuid>,
     pub location_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,
 }
 
 /// An audited lifecycle change made while the item belonged to a space.
@@ -176,6 +180,8 @@ pub enum InventoryError {
     RevisionConflict,
     /// The name is empty after trimming, or longer than the column allows.
     InvalidName,
+    /// A free-text detail exceeds the allowed length.
+    InvalidDetails,
     /// The counter row for the space is missing, which means the space was created without one.
     CounterMissing,
     /// The item state forbids this operation, for example renaming or transferring a trashed item.
@@ -794,6 +800,60 @@ impl Database {
         Ok(item)
     }
 
+    /// Replaces the descriptive fields under the same optimistic lock as other item edits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, missing item, stale revision, forbidden state, or storage error.
+    pub async fn update_item_details(
+        &self,
+        item_id: Uuid,
+        description: Option<&str>,
+        historical_reference: Option<&str>,
+        technical_reference: Option<&str>,
+        expected_revision: u64,
+    ) -> Result<Item, DatabaseError> {
+        fn normalized(value: Option<&str>, max: usize) -> Result<Option<String>, DatabaseError> {
+            let value = value.map(str::trim).filter(|value| !value.is_empty());
+            if value.is_some_and(|value| value.chars().count() > max) {
+                return Err(DatabaseError::Inventory(InventoryError::InvalidDetails));
+            }
+            Ok(value.map(str::to_owned))
+        }
+        let description = normalized(description, 10_000)?;
+        let historical_reference = normalized(historical_reference, 500)?;
+        let technical_reference = normalized(technical_reference, 500)?;
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+        let row =
+            sqlx::query("SELECT state, revision FROM inventory_items WHERE id = ? FOR UPDATE")
+                .bind(item_id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(DatabaseError::Query)?
+                .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+        let revision: u64 = row.try_get("revision").map_err(DatabaseError::Query)?;
+        if revision != expected_revision {
+            return Err(DatabaseError::Inventory(InventoryError::RevisionConflict));
+        }
+        if decode_state(&row)? == ItemState::Trashed {
+            return Err(DatabaseError::Inventory(InventoryError::InvalidState));
+        }
+        sqlx::query(
+            "UPDATE inventory_items SET description = ?, historical_reference = ?, \
+                     technical_reference = ?, revision = revision + 1 WHERE id = ?",
+        )
+        .bind(description)
+        .bind(historical_reference)
+        .bind(technical_reference)
+        .bind(item_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        let item = fetch_item(&mut *transaction, item_id).await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+        Ok(item)
+    }
+
     /// Lists lifecycle audit events created in the item's current space.
     ///
     /// Events from previous spaces are deliberately excluded: moving an item never transfers
@@ -940,6 +1000,8 @@ impl Database {
             destination_category_ids,
         )
         .await?;
+
+        crate::groups::clear_item_groups_on_transfer(&mut transaction, item_id).await?;
 
         crate::locations::record_transfer_location_exit(
             &mut transaction,
@@ -1202,7 +1264,7 @@ impl Database {
                  SELECT l.id FROM inventory_locations l \
                  JOIN location_tree parent ON l.parent_id = parent.id WHERE l.space_id = ? \
              ) \
-             SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
+             SELECT id, space_id, inventory_number, name, description, historical_reference, technical_reference, state, revision, created_by_account_id, created_at \
              FROM inventory_items \
              WHERE space_id = ? AND inventory_number > ? \
                AND (? = '' OR LOCATE(?, name) > 0) \
@@ -1213,12 +1275,19 @@ impl Database {
                    WHERE a.item_id = inventory_items.id AND a.space_id = ? AND a.ended_at IS NULL \
                )) \
                AND (? IS NULL OR current_location_id IN (SELECT id FROM location_tree)) \
+               AND (? IS NULL OR EXISTS ( \
+                   SELECT 1 FROM inventory_group_members m \
+                   WHERE m.item_id = inventory_items.id AND m.space_id = inventory_items.space_id \
+                     AND m.group_id = ? \
+               )) \
              ORDER BY inventory_number LIMIT ?",
         )
         .bind(filters.category_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(filters.location_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(space_id.to_string())
@@ -1743,7 +1812,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::MySql>,
 {
     let row = sqlx::query(
-        "SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
+        "SELECT id, space_id, inventory_number, name, description, historical_reference, technical_reference, state, revision, created_by_account_id, created_at \
          FROM inventory_items WHERE id = ?",
     )
     .bind(item_id.to_string())
@@ -1763,6 +1832,13 @@ fn decode_item(row: &sqlx::mysql::MySqlRow) -> Result<Item, DatabaseError> {
             .try_get("inventory_number")
             .map_err(DatabaseError::Query)?,
         name: row.try_get("name").map_err(DatabaseError::Query)?,
+        description: row.try_get("description").map_err(DatabaseError::Query)?,
+        historical_reference: row
+            .try_get("historical_reference")
+            .map_err(DatabaseError::Query)?,
+        technical_reference: row
+            .try_get("technical_reference")
+            .map_err(DatabaseError::Query)?,
         state: decode_state(row)?,
         revision: row.try_get("revision").map_err(DatabaseError::Query)?,
         created_by_account_id: parse_uuid(&decode_text(row, "created_by_account_id")?)?,

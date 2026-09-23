@@ -149,6 +149,38 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<CollectionLocation>(HttpMethod.Post,
             $"api/v1/spaces/{spaceId}/locations", new { name, parent_id = parentId });
 
+    public async Task<IReadOnlyList<CollectionGroup>> GetGroupsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<GroupListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/groups");
+        return result.Groups;
+    }
+
+    public Task<CollectionGroup> CreateGroupAsync(Guid spaceId, string kind, string name) =>
+        SendJsonAsync<CollectionGroup>(HttpMethod.Post,
+            $"api/v1/spaces/{spaceId}/groups", new { kind, name });
+
+    public Task<CollectionGroup> RenameGroupAsync(Guid spaceId, Guid groupId, string name, string expectedRevision) =>
+        SendJsonAsync<CollectionGroup>(HttpMethod.Patch,
+            $"api/v1/spaces/{spaceId}/groups/{groupId}", new { name, expected_revision = expectedRevision });
+
+    public async Task DeleteGroupAsync(Guid spaceId, Guid groupId, string expectedRevision)
+    {
+        using var request = AuthenticatedRequest(HttpMethod.Delete,
+            $"api/v1/spaces/{spaceId}/groups/{groupId}");
+        request.Content = JsonContent.Create(new { expected_revision = expectedRevision });
+        using var response = await _client.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized) SignOut();
+        await EnsureSuccessAsync(response);
+    }
+
+    public Task<ItemGroupListResponse> GetItemGroupsAsync(Guid itemId) =>
+        SendJsonAsync<ItemGroupListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/groups");
+
+    public Task<ItemGroupListResponse> ReplaceItemGroupsAsync(Guid itemId, IReadOnlyList<Guid> groupIds, string expectedRevision) =>
+        SendJsonAsync<ItemGroupListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/groups",
+            new { group_ids = groupIds, expected_revision = expectedRevision });
+
     public async Task<IReadOnlyList<SpaceInvitation>> GetInvitationsAsync(Guid spaceId)
     {
         var result = await SendJsonAsync<InvitationListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/invitations");
@@ -207,7 +239,7 @@ public sealed class SessionApi : IDisposable
         await EnsureSuccessAsync(response);
     }
 
-    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50, string? state = null, Guid? categoryId = null, Guid? locationId = null)
+    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50, string? state = null, Guid? categoryId = null, Guid? locationId = null, Guid? groupId = null)
     {
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
         var parameters = new List<string> { $"limit={limit}" };
@@ -216,6 +248,7 @@ public sealed class SessionApi : IDisposable
         if (!string.IsNullOrWhiteSpace(state)) parameters.Add($"state={Uri.EscapeDataString(state)}");
         if (categoryId is { } id) parameters.Add($"category_id={id}");
         if (locationId is { } location) parameters.Add($"location_id={location}");
+        if (groupId is { } group) parameters.Add($"group_id={group}");
         return SendJsonAsync<ItemPageResponse>(HttpMethod.Get,
             $"api/v1/spaces/{spaceId}/items?{string.Join("&", parameters)}");
     }
@@ -229,6 +262,12 @@ public sealed class SessionApi : IDisposable
     public Task<InventoryItem> RenameItemAsync(Guid itemId, string name, string expectedRevision) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Patch, $"api/v1/items/{itemId}",
             new { name, expected_revision = expectedRevision });
+
+    public Task<InventoryItem> UpdateItemDetailsAsync(Guid itemId, string? description,
+        string? historicalReference, string? technicalReference, string expectedRevision) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Put, $"api/v1/items/{itemId}/details",
+            new { description, historical_reference = historicalReference,
+                technical_reference = technicalReference, expected_revision = expectedRevision });
 
     public Task<InventoryItem> ArchiveItemAsync(Guid itemId, string expectedRevision) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/items/{itemId}/archive",
@@ -474,6 +513,20 @@ public sealed record CollectionLocation(
     [property: JsonPropertyName("space_id")] Guid SpaceId,
     [property: JsonPropertyName("parent_id")] Guid? ParentId,
     [property: JsonPropertyName("name")] string Name);
+public sealed record CollectionGroup(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("revision")] string Revision)
+{
+    public string Label => $"{(Kind == "series" ? "Série" : "Regroupement")} · {Name}";
+}
+public sealed record GroupListResponse([property: JsonPropertyName("groups")] List<CollectionGroup> Groups);
+public sealed record ItemGroupListResponse(
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("groups")] List<CollectionGroup> Groups);
+public sealed record GroupOption(Guid? Id, string Label);
 public sealed record LocationListResponse(
     [property: JsonPropertyName("locations")] List<CollectionLocation> Locations);
 public sealed record LocationOption(Guid? Id, string Label);
@@ -517,6 +570,9 @@ public sealed record InventoryItem(
     [property: JsonPropertyName("space_id")] Guid SpaceId,
     [property: JsonPropertyName("inventory_number")] string InventoryNumber,
     [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string? Description,
+    [property: JsonPropertyName("historical_reference")] string? HistoricalReference,
+    [property: JsonPropertyName("technical_reference")] string? TechnicalReference,
     [property: JsonPropertyName("revision")] string Revision,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("state")] string? State = null)

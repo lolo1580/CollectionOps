@@ -24,7 +24,10 @@ await TransferWithDestinationCategories();
 await ReplaceCategoriesAllowsEmptySelection();
 await InventoryPageCarriesCategoryFilter();
 await ReadLocationsAndMoveItem();
-Console.WriteLine("SessionApi: 22 checks passed.");
+await UpdateItemDetailsUsesRevision();
+await AssignGroupsAndFilterInventory();
+await RenameAndDeleteEmptyGroup();
+Console.WriteLine("SessionApi: 25 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -368,6 +371,72 @@ static async Task ArchiveUsesExpectedRevision()
     Assert(handler.LastPath == $"/api/v1/items/{itemId}/archive", "Archiving must target the selected item.");
     Assert(handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true, "Archiving must send the displayed revision.");
     Assert(handler.LastToken == "secret", "Archiving must carry the session token.");
+}
+
+static async Task UpdateItemDetailsUsesRevision()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var itemId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{itemId}\",\"space_id\":\"{Guid.NewGuid()}\",\"inventory_number\":\"1\",\"name\":\"Casque\",\"description\":\"Ancien casque\",\"historical_reference\":\"Archive 42\",\"technical_reference\":\"Modèle B\",\"revision\":\"2\",\"created_at\":\"2026-09-23T10:00:00Z\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var updated = await api.UpdateItemDetailsAsync(itemId, "Ancien casque", "Archive 42", "Modèle B", "1");
+    Assert(updated.Description == "Ancien casque" && updated.TechnicalReference == "Modèle B",
+        "Item details must round-trip.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/details" && handler.LastMethod == HttpMethod.Put,
+        "Item details must use their dedicated route.");
+    Assert(handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true &&
+        handler.LastBody.Contains("\"historical_reference\":\"Archive 42\"") &&
+        handler.LastToken == "secret", "Details must carry the revision and token.");
+}
+
+static async Task AssignGroupsAndFilterInventory()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var itemId = Guid.NewGuid();
+    var groupId = Guid.NewGuid();
+    var spaceId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"revision\":\"3\",\"groups\":[{{\"id\":\"{groupId}\",\"space_id\":\"{spaceId}\",\"kind\":\"series\",\"name\":\"Casques 1944\"}}]}}");
+    handler.Enqueue(HttpStatusCode.OK, """{"items":[],"next_cursor":null}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var assigned = await api.ReplaceItemGroupsAsync(itemId, [groupId], "2");
+    Assert(assigned.Groups.Single().Label == "Série · Casques 1944", "Assigned series must parse.");
+    Assert(handler.LastBody?.Contains($"\"{groupId}\"") == true &&
+        handler.LastBody.Contains("\"expected_revision\":\"2\""),
+        "Group assignment must send the selected ID and revision.");
+    await api.GetItemsPageAsync(spaceId, groupId: groupId);
+    Assert(handler.LastQuery?.Contains($"group_id={groupId}") == true,
+        "Inventory filtering must include the group ID.");
+}
+
+static async Task RenameAndDeleteEmptyGroup()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var groupId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{groupId}\",\"space_id\":\"{spaceId}\",\"kind\":\"group\",\"name\":\"Ensemble A\",\"revision\":\"2\"}}");
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var renamed = await api.RenameGroupAsync(spaceId, groupId, "Ensemble A", "1");
+    Assert(renamed.Revision == "2" && handler.LastMethod == HttpMethod.Patch &&
+        handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true,
+        "Group rename must use optimistic revision checking.");
+    await api.DeleteGroupAsync(spaceId, groupId, "2");
+    Assert(handler.LastMethod == HttpMethod.Delete &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/groups/{groupId}" &&
+        handler.LastBody?.Contains("\"expected_revision\":\"2\"") == true,
+        "Group deletion must target the selected group and carry its revision.");
 }
 
 static void Assert(bool condition, string message)

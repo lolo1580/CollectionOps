@@ -1,6 +1,7 @@
 mod config;
 mod credentials;
 mod database;
+mod groups;
 mod http;
 mod invitations;
 mod locations;
@@ -21,6 +22,7 @@ pub use database::{
     MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership, SessionError, SessionRecord, Space,
     SpaceError, TransferOutcome,
 };
+pub use groups::{GroupError, InventoryGroup};
 pub use http::{
     API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database,
     app_with_database_and_mail,

@@ -100,6 +100,8 @@ Les emplacements physiques sont propres à chaque espace et peuvent être imbriq
 
 L'inventaire peut être filtré par catégorie ou emplacement, descendants compris, tout en conservant la recherche, le filtre d'état et la pagination. Le client Windows propose ces filtres dans l'écran Collection.
 
+Chaque fiche possède aussi une description (10 000 caractères maximum), une référence historique et une référence technique (500 caractères chacune). Les valeurs vides sont enregistrées comme absentes. Une série ou un regroupement est nommé dans son espace ; un objet peut appartenir à plusieurs de chaque type. Le client Windows permet de les créer, renommer, classer et filtrer. La suppression d'un ensemble exige qu'il soit vide et une confirmation dans le client. Les affectations sont retirées lors d'un transfert vers un autre espace, tandis que la description et les références suivent l'objet.
+
 ## Archivage et corbeille
 
 Un objet possède un état `active`, `archived` ou `trashed`. L'archivage et la mise à la corbeille sont réversibles, et aucune suppression physique n'est exposée en V1. Les routes `POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent l'écriture dans l'espace courant et la révision lue par le client. Une transition non autorisée reçoit `422`, une révision obsolète `409` sans rien modifier. Chaque transition incrémente la révision et ajoute un événement d'audit avec l'auteur et l'état avant/après. Un objet en corbeille est en lecture seule jusqu'à sa restauration. L'identifiant stable, le numéro d'inventaire et l'historique des transferts survivent à toutes les transitions, et les numéros ne sont jamais réutilisés.
@@ -137,7 +139,7 @@ Le destinataire avec un compte existant doit se connecter avec l'adresse e-mail 
 
 Le lien `collectionops://invite/...?...` se colle dans **Compte → Accepter une invitation** du client Windows. Il n'est pas encore associé automatiquement au protocole Windows ; le collage est nécessaire. Le lien contient l'adresse HTTPS du serveur configurée par l'exploitant, et le client refuse de transmettre le jeton si son adresse de serveur ne correspond pas. Le jeton n'est jamais placé dans une URL HTTP.
 
-La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`, ainsi que les catégories, leurs champs personnalisés et l'emplacement courant. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. La description reste à concevoir. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
+La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`, la description et les références par `PUT /api/v1/items/{item_id}/details`, ainsi que les catégories, leurs champs personnalisés, les séries/regroupements et l'emplacement courant. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
 
 ## Démarrer le client Windows
 

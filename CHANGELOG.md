@@ -12,6 +12,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Renommage des séries et regroupements avec contrôle de révision ; suppression des seuls ensembles vides, confirmée dans le client Windows.
+- Description, références historique et technique des objets, avec validation et contrôle de révision dans l'API et le client Windows.
+- Séries et regroupements par espace, classement multiple des objets et filtre d'inventaire correspondant ; les affectations sont retirées lors d'un transfert.
+- Test HTTP/MariaDB du parcours fiche, des droits, des révisions, du filtrage et de l'isolation des regroupements.
 - Emplacements physiques hiérarchiques par espace, position courante unique par objet et journal des déplacements, reliés à l'API et au client Windows.
 - Sortie d'emplacement enregistrée lors d'un transfert entre espaces, sans révéler l'historique source dans la destination.
 - Filtres d'inventaire par catégorie ou emplacement et leurs descendants, compatibles avec la recherche, les états et la pagination ; tests MariaDB/HTTP et contrat client.

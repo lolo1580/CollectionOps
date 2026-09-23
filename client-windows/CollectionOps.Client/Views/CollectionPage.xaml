@@ -46,6 +46,24 @@
                 <Button x:Name="CreateLocationButton" Content="Créer" Click="OnCreateLocation" VerticalAlignment="Bottom" />
             </StackPanel>
 
+            <TextBlock Text="Séries et regroupements" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Créez des séries ou des ensembles propres à cet espace ; un objet peut appartenir à plusieurs d'entre eux." TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="NewGroupName" PlaceholderText="Nom" Width="260" />
+                <ComboBox x:Name="NewGroupKind" Header="Type" Width="170" SelectedIndex="0">
+                    <ComboBoxItem Content="Série" Tag="series" />
+                    <ComboBoxItem Content="Regroupement" Tag="group" />
+                </ComboBox>
+                <Button x:Name="CreateGroupButton" Content="Créer" Click="OnCreateGroup" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <ComboBox x:Name="ManageGroups" Header="Série ou regroupement à gérer" Width="400"
+                      DisplayMemberPath="Label" SelectionChanged="OnManageGroupSelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="EditedGroupName" Header="Nouveau nom" Width="300" MaxLength="255" />
+                <Button x:Name="RenameGroupButton" Content="Renommer" Click="OnRenameGroup" VerticalAlignment="Bottom" />
+                <Button x:Name="DeleteGroupButton" Content="Supprimer si vide" Click="OnDeleteGroup" VerticalAlignment="Bottom" />
+            </StackPanel>
+
             <StackPanel x:Name="SharingPanel" Spacing="8" Visibility="Collapsed">
                 <TextBlock Text="Partager cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <TextBlock Text="Seul le propriétaire peut inviter. La lecture de la collection est présélectionnée ; aucun droit financier n'est accordé par défaut. Un nouvel envoi à la même adresse invalide le précédent lien." TextWrapping="Wrap" />
@@ -126,6 +144,10 @@
                 <ComboBox x:Name="LocationFilter" Header="Emplacement" Width="260"
                           DisplayMemberPath="Label" SelectionChanged="OnLocationFilterChanged" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="GroupFilter" Header="Série / regroupement" Width="260"
+                          DisplayMemberPath="Label" SelectionChanged="OnGroupFilterChanged" />
+            </StackPanel>
             <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="services:InventoryItem">
@@ -146,6 +168,14 @@
                 <TextBox x:Name="EditedItemName" Header="Nom" Width="360" />
                 <Button x:Name="SaveItemNameButton" Content="Enregistrer le nom" Click="OnSaveItemName" VerticalAlignment="Bottom" />
             </StackPanel>
+            <TextBox x:Name="EditedDescription" Header="Description" Width="700" Height="110"
+                     AcceptsReturn="True" TextWrapping="Wrap" MaxLength="10000" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="EditedHistoricalReference" Header="Référence historique" Width="340" MaxLength="500" />
+                <TextBox x:Name="EditedTechnicalReference" Header="Référence technique" Width="340" MaxLength="500" />
+            </StackPanel>
+            <Button x:Name="SaveItemDetailsButton" Content="Enregistrer la description et les références"
+                    Click="OnSaveItemDetails" HorizontalAlignment="Left" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button x:Name="ArchiveItemButton" Content="Archiver" Click="OnArchiveItem" />
                 <Button x:Name="TrashItemButton" Content="Mettre à la corbeille" Click="OnTrashItem" />
@@ -156,6 +186,10 @@
             <TextBlock Text="Cochez les catégories à conserver ou à ajouter. Les valeurs des champs encore applicables sont préservées ; les autres restent seulement dans l'historique." TextWrapping="Wrap" />
             <ListView x:Name="ItemCategoryChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
             <Button x:Name="SaveItemCategoriesButton" Content="Enregistrer le classement" Click="OnSaveItemCategories" HorizontalAlignment="Left" />
+            <TextBlock Text="Séries et regroupements de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <ListView x:Name="ItemGroupChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
+            <Button x:Name="SaveItemGroupsButton" Content="Enregistrer les séries et regroupements"
+                    Click="OnSaveItemGroups" HorizontalAlignment="Left" />
             <ListView x:Name="EffectiveFields" Height="140" DisplayMemberPath="Label" SelectionChanged="OnEffectiveFieldSelected" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="FieldValue" Header="Valeur du champ sélectionné" Width="350" />

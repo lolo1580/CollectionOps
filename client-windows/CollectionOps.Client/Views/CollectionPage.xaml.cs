@@ -20,9 +20,12 @@ public sealed partial class CollectionPage : Page
     private bool _loadingCategories;
     private Guid? _categoryFilter;
     private Guid? _locationFilter;
+    private Guid? _groupFilter;
+    private bool _loadingGroups;
     private bool _loadingLocations;
     private IReadOnlyList<CollectionCategory> _categories = [];
     private IReadOnlyList<CollectionLocation> _locations = [];
+    private IReadOnlyList<CollectionGroup> _groups = [];
     private int _assignedCategoryCount;
     private HashSet<Guid> _assignedCategoryIds = [];
 
@@ -65,6 +68,13 @@ public sealed partial class CollectionPage : Page
         await RefreshItemsAsync();
     }
 
+    private async void OnGroupFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingGroups || !Api.IsSignedIn) return;
+        _groupFilter = (GroupFilter.SelectedItem as GroupOption)?.Id;
+        await RefreshItemsAsync();
+    }
+
     private async void OnLoadMore(object sender, RoutedEventArgs e)
     {
         if (ActiveSpace is not { } space || _nextCursor is not { } cursor) return;
@@ -72,12 +82,13 @@ public sealed partial class CollectionPage : Page
         var state = _stateFilter;
         var categoryId = _categoryFilter;
         var locationId = _locationFilter;
+        var groupId = _groupFilter;
         await RunAsync(async () =>
         {
             var page = await Api.GetItemsPageAsync(space.Id, search, cursor, state: state,
-                categoryId: categoryId, locationId: locationId);
+                categoryId: categoryId, locationId: locationId, groupId: groupId);
             if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state ||
-                _categoryFilter != categoryId || _locationFilter != locationId) return;
+                _categoryFilter != categoryId || _locationFilter != locationId || _groupFilter != groupId) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
             items.AddRange(page.Items);
             Items.ItemsSource = items;
@@ -89,6 +100,7 @@ public sealed partial class CollectionPage : Page
         if (_loadingSpaces) return;
         _categoryFilter = null;
         _locationFilter = null;
+        _groupFilter = null;
         await RunAsync(async () =>
         {
             UpdateDestinationOptions();
@@ -96,6 +108,7 @@ public sealed partial class CollectionPage : Page
             await RefreshMembersCoreAsync();
             await RefreshCategoriesCoreAsync();
             await RefreshLocationsCoreAsync();
+            await RefreshGroupsCoreAsync();
             await RefreshItemsCoreAsync();
             await RefreshInvitationsCoreAsync();
         });
@@ -110,6 +123,10 @@ public sealed partial class CollectionPage : Page
             ? $"Identifiant : {selected.Id} · Créé le {selected.CreatedAt.ToLocalTime():g}"
             : string.Empty;
         EditedItemName.Text = ActiveItem?.Name ?? string.Empty;
+        EditedDescription.Text = ActiveItem?.Description ?? string.Empty;
+        EditedHistoricalReference.Text = ActiveItem?.HistoricalReference ?? string.Empty;
+        EditedTechnicalReference.Text = ActiveItem?.TechnicalReference ?? string.Empty;
+        ItemGroupChoices.SelectedItems.Clear();
         TransferHistory.ItemsSource = null;
         StateAuditHistory.ItemsSource = null;
         AssignedCategories.Text = "Aucune catégorie.";
@@ -125,6 +142,7 @@ public sealed partial class CollectionPage : Page
         {
             await RefreshHistoryAsync();
             await RefreshItemTaxonomyAsync();
+            await RefreshItemGroupsAsync();
             await RefreshItemLocationAsync();
             if (CanReadStateAudit) await RefreshStateAuditAsync();
         }
@@ -396,12 +414,14 @@ public sealed partial class CollectionPage : Page
         {
             _categoryFilter = null;
             _locationFilter = null;
+            _groupFilter = null;
         }
         UpdateDestinationOptions();
         TransferHistory.ItemsSource = null;
         await RefreshMembersCoreAsync();
         await RefreshCategoriesCoreAsync();
         await RefreshLocationsCoreAsync();
+        await RefreshGroupsCoreAsync();
         if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
@@ -420,7 +440,7 @@ public sealed partial class CollectionPage : Page
         if (ActiveSpace is { } space && _canReadActiveSpace)
         {
             var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter,
-                categoryId: _categoryFilter, locationId: _locationFilter);
+                categoryId: _categoryFilter, locationId: _locationFilter, groupId: _groupFilter);
             Items.ItemsSource = page.Items;
             _nextCursor = page.NextCursor;
         }
@@ -456,6 +476,20 @@ public sealed partial class CollectionPage : Page
         DestinationSpaces.ItemsSource = _spaces.Where(space => space.Id != ActiveSpace?.Id).ToList();
         DestinationSpaces.SelectedIndex = -1;
         DestinationCategoryChoices.ItemsSource = null;
+    }
+
+    private async void OnSaveItemDetails(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        await RunAsync(async () =>
+        {
+            var updated = await Api.UpdateItemDetailsAsync(item.Id, EditedDescription.Text,
+                EditedHistoricalReference.Text, EditedTechnicalReference.Text, item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == updated.Id);
+            ShowStatus("Description et références enregistrées.", InfoBarSeverity.Success);
+        });
     }
 
     private static List<CategoryOption> CategoryOptions(IReadOnlyList<CollectionCategory> categories)
@@ -540,6 +574,87 @@ public sealed partial class CollectionPage : Page
         ItemLocationChoices.SelectedIndex = 0;
     }
 
+    private async Task RefreshGroupsCoreAsync()
+    {
+        var selectedId = (ManageGroups.SelectedItem as CollectionGroup)?.Id;
+        _groups = ActiveSpace is { } space && _canReadActiveSpace
+            ? await Api.GetGroupsAsync(space.Id) : [];
+        var options = _groups.Select(group => new GroupOption(group.Id, group.Label)).ToList();
+        _loadingGroups = true;
+        try
+        {
+            GroupFilter.ItemsSource = new[] { new GroupOption(null, "Toutes les séries et regroupements") }
+                .Concat(options).ToList();
+            GroupFilter.SelectedItem = (GroupFilter.ItemsSource as IEnumerable<GroupOption>)?
+                .FirstOrDefault(option => option.Id == _groupFilter);
+        }
+        finally { _loadingGroups = false; }
+        ManageGroups.ItemsSource = _groups;
+        ManageGroups.SelectedItem = _groups.FirstOrDefault(group => group.Id == selectedId);
+        ItemGroupChoices.ItemsSource = options;
+    }
+
+    private void OnManageGroupSelected(object sender, SelectionChangedEventArgs e)
+    {
+        EditedGroupName.Text = (ManageGroups.SelectedItem as CollectionGroup)?.Name ?? string.Empty;
+        UpdateButtons();
+    }
+
+    private async void OnRenameGroup(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ManageGroups.SelectedItem is not CollectionGroup group) return;
+        var name = EditedGroupName.Text.Trim();
+        if (name.Length == 0)
+        {
+            ShowStatus("Saisissez un nom.", InfoBarSeverity.Warning);
+            return;
+        }
+        await RunAsync(async () =>
+        {
+            await Api.RenameGroupAsync(space.Id, group.Id, name, group.Revision);
+            await RefreshGroupsCoreAsync();
+            if (ActiveItem is not null) await RefreshItemGroupsCoreAsync();
+            ShowStatus("Série ou regroupement renommé.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnDeleteGroup(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ManageGroups.SelectedItem is not CollectionGroup group) return;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = $"Supprimer {group.Label} ?",
+            Content = "Seul un regroupement sans objets peut être supprimé. Cette suppression ne peut pas être annulée.",
+            PrimaryButtonText = "Supprimer",
+            CloseButtonText = "Annuler",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        await RunAsync(async () =>
+        {
+            await Api.DeleteGroupAsync(space.Id, group.Id, group.Revision);
+            if (_groupFilter == group.Id) _groupFilter = null;
+            await RefreshGroupsCoreAsync();
+            await RefreshItemsCoreAsync();
+            ShowStatus("Série ou regroupement vide supprimé.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnCreateGroup(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewGroupName.Text)) return;
+        var kind = (NewGroupKind.SelectedItem as ComboBoxItem)?.Tag as string ?? "series";
+        await RunAsync(async () =>
+        {
+            await Api.CreateGroupAsync(space.Id, kind, NewGroupName.Text.Trim());
+            NewGroupName.Text = string.Empty;
+            await RefreshGroupsCoreAsync();
+            if (ActiveItem is not null) await RefreshItemGroupsCoreAsync();
+            ShowStatus("Série ou regroupement créé.", InfoBarSeverity.Success);
+        });
+    }
+
     private async void OnCreateLocation(object sender, RoutedEventArgs e)
     {
         if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewLocationName.Text)) return;
@@ -607,6 +722,34 @@ public sealed partial class CollectionPage : Page
     }
 
     private Task RefreshItemLocationAsync() => RunAsync(RefreshItemLocationCoreAsync);
+
+    private Task RefreshItemGroupsAsync() => RunAsync(RefreshItemGroupsCoreAsync);
+
+    private async Task RefreshItemGroupsCoreAsync()
+    {
+        if (ActiveItem is not { } item) return;
+        var assigned = await Api.GetItemGroupsAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        var ids = assigned.Groups.Select(group => group.Id).ToHashSet();
+        ItemGroupChoices.SelectedItems.Clear();
+        foreach (var option in (ItemGroupChoices.ItemsSource as IEnumerable<GroupOption>) ?? [])
+            if (option.Id is { } id && ids.Contains(id)) ItemGroupChoices.SelectedItems.Add(option);
+    }
+
+    private async void OnSaveItemGroups(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        var ids = ItemGroupChoices.SelectedItems.Cast<GroupOption>()
+            .Where(option => option.Id.HasValue).Select(option => option.Id!.Value).ToList();
+        await RunAsync(async () =>
+        {
+            await Api.ReplaceItemGroupsAsync(item.Id, ids, item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == item.Id);
+            ShowStatus("Séries et regroupements enregistrés.", InfoBarSeverity.Success);
+        });
+    }
 
     private async Task RefreshItemLocationCoreAsync()
     {
@@ -714,6 +857,11 @@ public sealed partial class CollectionPage : Page
         RefreshHistoryButton.IsEnabled = false;
         RefreshStateAuditButton.IsEnabled = false;
         SaveItemNameButton.IsEnabled = false;
+        SaveItemDetailsButton.IsEnabled = false;
+        SaveItemGroupsButton.IsEnabled = false;
+        CreateGroupButton.IsEnabled = false;
+        RenameGroupButton.IsEnabled = false;
+        DeleteGroupButton.IsEnabled = false;
         ArchiveItemButton.IsEnabled = false;
         TrashItemButton.IsEnabled = false;
         RestoreItemButton.IsEnabled = false;
@@ -748,6 +896,11 @@ public sealed partial class CollectionPage : Page
         RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
         RefreshStateAuditButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && CanReadStateAudit;
         SaveItemNameButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        SaveItemDetailsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
+        SaveItemGroupsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
+        CreateGroupButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
+        RenameGroupButton.IsEnabled = CreateGroupButton.IsEnabled && ManageGroups.SelectedItem is CollectionGroup;
+        DeleteGroupButton.IsEnabled = RenameGroupButton.IsEnabled;
         var activeItemState = ActiveItem?.State ?? "active";
         ArchiveItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState == "active";
         TrashItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState != "trashed";
