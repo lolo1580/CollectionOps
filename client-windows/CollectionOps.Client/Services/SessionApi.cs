@@ -217,6 +217,13 @@ public sealed class SessionApi : IDisposable
         return result.Transfers;
     }
 
+    public async Task<IReadOnlyList<ItemStateAuditEvent>> GetItemStateEventsAsync(Guid itemId)
+    {
+        var result = await SendJsonAsync<ItemStateEventListResponse>(HttpMethod.Get,
+            $"api/v1/items/{itemId}/state-events");
+        return result.Events;
+    }
+
     public async Task RevokeAsync(string sessionId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -406,3 +413,24 @@ public sealed record TransferOutcome(
     [property: JsonPropertyName("transfer")] InventoryTransfer Transfer);
 public sealed record TransferListResponse([property: JsonPropertyName("transfers")] List<InventoryTransfer> Transfers);
 public sealed record TransferDisplay(string Description, string Date);
+public sealed record ItemStateAuditEvent(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("actor_account_id")] Guid ActorAccountId,
+    [property: JsonPropertyName("actor_display_name")] string ActorDisplayName,
+    [property: JsonPropertyName("state_before")] string StateBefore,
+    [property: JsonPropertyName("state_after")] string StateAfter,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+{
+    public string Description => $"{ActorDisplayName} : {StateLabel(StateBefore)} → {StateLabel(StateAfter)}";
+    public string Date => CreatedAt.ToLocalTime().ToString("g");
+
+    private static string StateLabel(string state) => state switch
+    {
+        "active" => "Actif",
+        "archived" => "Archivé",
+        "trashed" => "Corbeille",
+        _ => state,
+    };
+}
+public sealed record ItemStateEventListResponse(
+    [property: JsonPropertyName("events")] List<ItemStateAuditEvent> Events);

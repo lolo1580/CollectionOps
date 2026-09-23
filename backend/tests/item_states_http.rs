@@ -99,8 +99,28 @@ async fn item_states_are_protected_audited_and_filterable() {
     let archive_path = format!("/api/v1/items/{}/archive", item.id);
     let trash_path = format!("/api/v1/items/{}/trash", item.id);
     let restore_path = format!("/api/v1/items/{}/restore", item.id);
+    let state_events_path = format!("/api/v1/items/{}/state-events", item.id);
     let item_path = format!("/api/v1/items/{}", item.id);
     let list_path = format!("/api/v1/spaces/{}/items", space.id);
+
+    assert_eq!(
+        send(&router, Method::GET, &state_events_path, None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::GET,
+            &state_events_path,
+            Some(&other_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 
     assert_eq!(
         send(
@@ -236,6 +256,26 @@ async fn item_states_are_protected_audited_and_filterable() {
     assert_eq!(noop.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json_body(noop).await["code"], "invalid_transition");
 
+    let events = send(
+        &router,
+        Method::GET,
+        &state_events_path,
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(events.status(), StatusCode::OK);
+    let events = json_body(events).await;
+    let events = events["events"].as_array().unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "refused transitions must not create audit rows"
+    );
+    assert_eq!(events[0]["state_before"], "trashed");
+    assert_eq!(events[0]["state_after"], "active");
+    assert_eq!(events[0]["actor_account_id"], owner_id.to_string());
+
     // A member with read-only access may see the item but not change its state.
     database
         .add_member(space.id, outsider, &[Permission::CollectionsRead])
@@ -258,6 +298,19 @@ async fn item_states_are_protected_audited_and_filterable() {
         .await
         .status(),
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::GET,
+            &state_events_path,
+            Some(&other_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "read-only members cannot inspect the sensitive actor audit"
     );
 
     // Granting write lets the same member archive, and the audit row names the member.
@@ -290,4 +343,43 @@ async fn item_states_are_protected_audited_and_filterable() {
     .await
     .unwrap();
     assert_eq!(String::from_utf8(actor).unwrap(), outsider.to_string());
+
+    let events = send(
+        &router,
+        Method::GET,
+        &state_events_path,
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    let events = json_body(events).await;
+    assert_eq!(events["events"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        events["events"][0]["actor_account_id"],
+        outsider.to_string()
+    );
+    assert_eq!(events["events"][0]["actor_display_name"], "Other");
+
+    // A transfer does not grant the destination space access to prior-space audit events.
+    let destination = database
+        .create_space("Destination", owner_id)
+        .await
+        .unwrap();
+    database
+        .transfer_item(item.id, destination.id, 5, owner_id)
+        .await
+        .unwrap();
+    let events = send(
+        &router,
+        Method::GET,
+        &state_events_path,
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(events.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(events).await["events"].as_array().unwrap().len(),
+        0
+    );
 }

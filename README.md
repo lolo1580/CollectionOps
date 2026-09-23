@@ -92,6 +92,8 @@ La création, la recherche paginée par espace, la lecture et le transfert des o
 
 Un objet possède un état `active`, `archived` ou `trashed`. L'archivage et la mise à la corbeille sont réversibles, et aucune suppression physique n'est exposée en V1. Les routes `POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent l'écriture dans l'espace courant et la révision lue par le client. Une transition non autorisée reçoit `422`, une révision obsolète `409` sans rien modifier. Chaque transition incrémente la révision et ajoute un événement d'audit avec l'auteur et l'état avant/après. Un objet en corbeille est en lecture seule jusqu'à sa restauration. L'identifiant stable, le numéro d'inventaire et l'historique des transferts survivent à toutes les transitions, et les numéros ne sont jamais réutilisés.
 
+`GET /api/v1/items/{item_id}/state-events` présente cet audit au propriétaire de l'espace courant ou à l'administrateur système. Après un transfert, les événements d'un ancien espace ne sont pas révélés dans l'espace de destination. Le client Windows affiche cette chronologie dans la fiche d'objet aux personnes autorisées.
+
 ## Routes de session
 
 | Méthode | Route | Rôle |

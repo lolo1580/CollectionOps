@@ -9,6 +9,8 @@ public sealed partial class CollectionPage : Page
     private SessionApi Api => App.Sessions;
     private CollectionSpace? ActiveSpace => Spaces.SelectedItem as CollectionSpace;
     private InventoryItem? ActiveItem => Items.SelectedItem as InventoryItem;
+    private bool CanReadStateAudit => ActiveSpace is { } space &&
+        (space.OwnerAccountId == Api.CurrentAccountId || Api.CurrentIsSystemAdmin);
     private IReadOnlyList<CollectionSpace> _spaces = [];
     private bool _loadingSpaces;
     private string _search = string.Empty;
@@ -79,8 +81,15 @@ public sealed partial class CollectionPage : Page
             : string.Empty;
         EditedItemName.Text = ActiveItem?.Name ?? string.Empty;
         TransferHistory.ItemsSource = null;
+        StateAuditHistory.ItemsSource = null;
+        StateAuditPanel.Visibility = ActiveItem is not null && CanReadStateAudit
+            ? Visibility.Visible : Visibility.Collapsed;
         UpdateButtons();
-        if (ActiveItem is not null) await RefreshHistoryAsync();
+        if (ActiveItem is not null)
+        {
+            await RefreshHistoryAsync();
+            if (CanReadStateAudit) await RefreshStateAuditAsync();
+        }
     }
 
     private async void OnSaveItemName(object sender, RoutedEventArgs e)
@@ -103,6 +112,7 @@ public sealed partial class CollectionPage : Page
     }
 
     private async void OnRefreshHistory(object sender, RoutedEventArgs e) => await RefreshHistoryAsync();
+    private async void OnRefreshStateAudit(object sender, RoutedEventArgs e) => await RefreshStateAuditAsync();
 
     private async void OnArchiveItem(object sender, RoutedEventArgs e)
     {
@@ -363,6 +373,7 @@ public sealed partial class CollectionPage : Page
         else Items.ItemsSource = null;
         Items.SelectedItem = null;
         TransferHistory.ItemsSource = null;
+        StateAuditHistory.ItemsSource = null;
     }
 
     private Task RefreshHistoryAsync() => RunAsync(async () =>
@@ -374,6 +385,14 @@ public sealed partial class CollectionPage : Page
             $"{SpaceName(transfer.SourceSpaceId)} n° {transfer.SourceInventoryNumber} → " +
             $"{SpaceName(transfer.DestinationSpaceId)} n° {transfer.DestinationInventoryNumber}",
             transfer.TransferredAt.ToLocalTime().ToString("g"))).ToList();
+    });
+
+    private Task RefreshStateAuditAsync() => RunAsync(async () =>
+    {
+        if (ActiveItem is not { } item || !CanReadStateAudit) return;
+        var events = await Api.GetItemStateEventsAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        StateAuditHistory.ItemsSource = events;
     });
 
     private string SpaceName(Guid id) => _spaces.FirstOrDefault(space => space.Id == id)?.Name ?? "Espace inaccessible";
@@ -394,6 +413,7 @@ public sealed partial class CollectionPage : Page
         LoadMoreButton.IsEnabled = false;
         TransferButton.IsEnabled = false;
         RefreshHistoryButton.IsEnabled = false;
+        RefreshStateAuditButton.IsEnabled = false;
         SaveItemNameButton.IsEnabled = false;
         ArchiveItemButton.IsEnabled = false;
         TrashItemButton.IsEnabled = false;
@@ -421,6 +441,7 @@ public sealed partial class CollectionPage : Page
         LoadMoreButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace && _nextCursor is not null;
         TransferButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && DestinationSpaces.ItemsSource is not null;
         RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        RefreshStateAuditButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && CanReadStateAudit;
         SaveItemNameButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
         var activeItemState = ActiveItem?.State ?? "active";
         ArchiveItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState == "active";

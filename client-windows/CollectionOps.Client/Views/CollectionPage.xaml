@@ -133,6 +133,21 @@
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+            <StackPanel x:Name="StateAuditPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock Text="Historique des états dans cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Visible par le propriétaire ou un administrateur. Les événements d'un ancien espace ne sont pas affichés ici." TextWrapping="Wrap" />
+                <Button x:Name="RefreshStateAuditButton" Content="Actualiser l'audit" Click="OnRefreshStateAudit" HorizontalAlignment="Left" />
+                <ListView x:Name="StateAuditHistory" SelectionMode="None">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="services:ItemStateAuditEvent">
+                            <StackPanel Margin="0,8,0,8" Spacing="4">
+                                <TextBlock Text="{x:Bind Description}" TextWrapping="Wrap" />
+                                <TextBlock Text="{x:Bind Date}" Opacity="0.7" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Page>

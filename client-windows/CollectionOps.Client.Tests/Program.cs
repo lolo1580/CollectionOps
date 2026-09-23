@@ -9,6 +9,7 @@ await RejectMalformedJson();
 await ReadCollectionWithSession();
 await TransferUsesExpectedRevision();
 await ReadTransferHistory();
+await ReadStateAuditHistory();
 await ReadInventoryPage();
 await InventoryPageCarriesStateFilter();
 await ArchiveUsesExpectedRevision();
@@ -17,7 +18,7 @@ await AcceptExistingAccountInvitationWithSession();
 await RejectInvitationForDifferentServer();
 await AdminCanListSpacesWithoutInventoryAccess();
 await MemberGrantUpdateSendsExplicitRights();
-Console.WriteLine("SessionApi: 15 checks passed.");
+Console.WriteLine("SessionApi: 16 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -101,6 +102,24 @@ static async Task ReadTransferHistory()
     var history = await api.GetItemTransfersAsync(itemId);
     Assert(history.Count == 1 && history[0].SourceInventoryNumber == "1", "History must parse transfer numbers.");
     Assert(handler.LastPath == $"/api/v1/items/{itemId}/transfers", "History route must target the selected item.");
+}
+
+static async Task ReadStateAuditHistory()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        """{"events":[{"id":"01900000-0000-7000-8000-000000000003","actor_account_id":"01900000-0000-7000-8000-000000000004","actor_display_name":"Owner","state_before":"active","state_after":"archived","created_at":"2026-09-23T10:00:00Z"}]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var itemId = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var events = await api.GetItemStateEventsAsync(itemId);
+    Assert(events.Count == 1 && events[0].Description == "Owner : Actif → Archivé",
+        "Lifecycle audit events must parse with a readable label.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/state-events",
+        "Lifecycle history must target the selected item.");
+    Assert(handler.LastToken == "secret", "Lifecycle history must carry the session token.");
 }
 
 static async Task ReadInventoryPage()

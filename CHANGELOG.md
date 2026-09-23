@@ -12,6 +12,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Consultation de l'audit des changements d'état depuis l'API et la fiche Windows, réservée au propriétaire ou à l'administrateur et limitée aux événements de l'espace courant.
 - États d'objet `active`, `archived` et `trashed` : archivage, corbeille et restauration réversibles, sans suppression physique en V1, avec conservation de l'identifiant, du numéro d'inventaire et de l'historique.
 - Routes `POST /api/v1/items/{item_id}/archive`, `/trash` et `/restore` exigeant l'écriture dans l'espace et la révision courante ; une transition non autorisée reçoit `422` et un objet en corbeille est refusé en écriture.
 - Filtre d'état sur la recherche paginée (`state=active|archived|trashed|all`, actifs par défaut) et table d'audit conservant l'auteur et l'état avant/après de chaque transition.

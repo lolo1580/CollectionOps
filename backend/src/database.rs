@@ -135,6 +135,19 @@ pub struct ItemTransfer {
     pub transferred_at: DateTime<Utc>,
 }
 
+/// An audited lifecycle change made while the item belonged to a space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemStateEvent {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub space_id: Uuid,
+    pub actor_account_id: Uuid,
+    pub actor_display_name: String,
+    pub state_before: ItemState,
+    pub state_after: ItemState,
+    pub created_at: DateTime<Utc>,
+}
+
 /// The result of a transfer: the updated item plus the history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
@@ -769,6 +782,55 @@ impl Database {
         let item = fetch_item(&mut *transaction, item_id).await?;
         transaction.commit().await.map_err(DatabaseError::Query)?;
         Ok(item)
+    }
+
+    /// Lists lifecycle audit events created in the item's current space.
+    ///
+    /// Events from previous spaces are deliberately excluded: moving an item never transfers
+    /// permission to inspect the previous space's audit log.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error for a failed query or malformed persisted data.
+    pub async fn item_state_events(
+        &self,
+        item_id: Uuid,
+        space_id: Uuid,
+    ) -> Result<Vec<ItemStateEvent>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT e.id, e.item_id, e.space_id, e.actor_account_id, a.display_name AS actor_display_name, \
+                    e.state_before, e.state_after, e.created_at \
+             FROM inventory_item_audit_events e \
+             JOIN accounts a ON a.id = e.actor_account_id \
+             WHERE e.item_id = ? AND e.space_id = ? \
+             ORDER BY e.created_at DESC, e.id DESC",
+        )
+        .bind(item_id.to_string())
+        .bind(space_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        rows.iter()
+            .map(|row| {
+                let before = ItemState::from_code(&decode_text(row, "state_before")?)
+                    .ok_or(DatabaseError::Inventory(InventoryError::InvalidState))?;
+                let after = ItemState::from_code(&decode_text(row, "state_after")?)
+                    .ok_or(DatabaseError::Inventory(InventoryError::InvalidState))?;
+                Ok(ItemStateEvent {
+                    id: parse_uuid(&decode_text(row, "id")?)?,
+                    item_id: parse_uuid(&decode_text(row, "item_id")?)?,
+                    space_id: parse_uuid(&decode_text(row, "space_id")?)?,
+                    actor_account_id: parse_uuid(&decode_text(row, "actor_account_id")?)?,
+                    actor_display_name: row
+                        .try_get("actor_display_name")
+                        .map_err(DatabaseError::Query)?,
+                    state_before: before,
+                    state_after: after,
+                    created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
+                })
+            })
+            .collect()
     }
 
     /// Moves an item to another space, renumbering it there.

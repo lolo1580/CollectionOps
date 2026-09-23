@@ -52,6 +52,8 @@ Les états sont `active`, `archived` et `trashed`, et chaque transition est rév
 
 L'identifiant stable, le numéro d'inventaire et l'historique des transferts sont conservés quel que soit l'état, et aucun numéro n'est réutilisé. Aucune suppression physique n'est exposée en V1. Un objet `trashed` est en lecture seule : le renommage et le transfert reçoivent `422` avec le code `invalid_state` tant qu'il n'est pas restauré. Chaque transition est auditée avec l'auteur et l'état avant/après.
 
+`GET /api/v1/items/{item_id}/state-events` retourne `{"events":[...]}` avec l'identifiant de l'événement, l'auteur, son nom affiché actuel, les états avant/après et la date. Cette vue d'audit est réservée au propriétaire de l'espace courant et à l'administrateur système ; les autres comptes reçoivent `404`, même s'ils peuvent lire l'objet. Seuls les événements enregistrés dans l'espace courant sont retournés : un transfert ne révèle pas le journal de l'ancien espace. Les événements sont ordonnés du plus récent au plus ancien.
+
 ## Transférer un objet
 
 `POST /api/v1/items/{item_id}/transfers` exige `collections_write` dans l'espace source et dans l'espace de destination. Le corps indique la destination et la révision lue par le client :

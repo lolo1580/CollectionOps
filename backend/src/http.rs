@@ -21,8 +21,9 @@ use crate::{
         SessionTokenError,
     },
     database::{
-        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState, ItemTransfer,
-        MemberWithAccount, SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
+        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState, ItemStateEvent,
+        ItemTransfer, MemberWithAccount, SessionError, SessionRecord, Space, SpaceError,
+        TransferOutcome,
     },
     invitations::{Invitation, InvitationError},
     mail::SmtpDelivery,
@@ -1119,6 +1120,38 @@ pub struct ItemTransferListResponse {
     pub transfers: Vec<ItemTransferResponse>,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemStateEventResponse {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub space_id: Uuid,
+    pub actor_account_id: Uuid,
+    pub actor_display_name: String,
+    pub state_before: String,
+    pub state_after: String,
+    pub created_at: String,
+}
+
+impl From<ItemStateEvent> for ItemStateEventResponse {
+    fn from(value: ItemStateEvent) -> Self {
+        Self {
+            id: value.id,
+            item_id: value.item_id,
+            space_id: value.space_id,
+            actor_account_id: value.actor_account_id,
+            actor_display_name: value.actor_display_name,
+            state_before: value.state_before.as_str().to_owned(),
+            state_after: value.state_after.as_str().to_owned(),
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemStateEventListResponse {
+    pub events: Vec<ItemStateEventResponse>,
+}
+
 #[utoipa::path(get, path = "/api/v1/spaces", tag = "collection",
     responses((status = 200, body = SpaceListResponse), (status = 401, body = ProblemDetails)))]
 async fn list_spaces(
@@ -1532,6 +1565,47 @@ async fn restore_item(
     transition_item(&state, item_id, payload, &headers, &uri, ItemState::Active).await
 }
 
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/state-events", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemStateEventListResponse), (status = 401, body = ProblemDetails),
+        (status = 404, body = ProblemDetails)))]
+async fn list_item_state_events(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemStateEventListResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    let space = database
+        .space(item.space_id)
+        .await
+        .map_err(|error| match error.space_error() {
+            Some(SpaceError::SpaceNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let events = database
+        .item_state_events(item_id, item.space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(ItemStateEventListResponse {
+        events: events.into_iter().map(Into::into).collect(),
+    }))
+}
+
 #[utoipa::path(post, path = "/api/v1/items/{item_id}/transfers", tag = "collection", request_body = TransferItemRequest,
     params(("item_id" = Uuid, Path, description = "Objet a transferer")),
     responses((status = 200, body = TransferOutcomeResponse), (status = 401, body = ProblemDetails),
@@ -1712,6 +1786,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         archive_item,
         trash_item,
         restore_item,
+        list_item_state_events,
         transfer_item,
         list_item_transfers,
         create_invitation,
@@ -1736,6 +1811,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
         ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, ItemStateRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
+        ItemStateEventResponse, ItemStateEventListResponse,
         IdleTimeout,
         Principal,
         crate::security::Permission
@@ -1873,6 +1949,10 @@ fn app_with_state(state: AppState) -> Router {
             .route(
                 &format!("{API_PREFIX}/items/{{item_id}}/restore"),
                 post(restore_item),
+            )
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}/state-events"),
+                get(list_item_state_events),
             )
             .route(
                 &format!("{API_PREFIX}/items/{{item_id}}/transfers"),

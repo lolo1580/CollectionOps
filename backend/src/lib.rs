@@ -15,8 +15,8 @@ pub use credentials::{
 };
 pub use database::{
     AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState,
-    ItemTransfer, MAX_ITEM_NAME_CHARS, MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership,
-    SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
+    ItemStateEvent, ItemTransfer, MAX_ITEM_NAME_CHARS, MAX_SPACE_NAME_CHARS, MemberWithAccount,
+    Membership, SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
 };
 pub use http::{
     API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database,
