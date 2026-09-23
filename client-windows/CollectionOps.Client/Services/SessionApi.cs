@@ -174,12 +174,13 @@ public sealed class SessionApi : IDisposable
         await EnsureSuccessAsync(response);
     }
 
-    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50)
+    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50, string? state = null)
     {
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
         var parameters = new List<string> { $"limit={limit}" };
         if (!string.IsNullOrWhiteSpace(search)) parameters.Add($"q={Uri.EscapeDataString(search.Trim())}");
         if (!string.IsNullOrEmpty(after)) parameters.Add($"after={Uri.EscapeDataString(after)}");
+        if (!string.IsNullOrWhiteSpace(state)) parameters.Add($"state={Uri.EscapeDataString(state)}");
         return SendJsonAsync<ItemPageResponse>(HttpMethod.Get,
             $"api/v1/spaces/{spaceId}/items?{string.Join("&", parameters)}");
     }
@@ -193,6 +194,18 @@ public sealed class SessionApi : IDisposable
     public Task<InventoryItem> RenameItemAsync(Guid itemId, string name, string expectedRevision) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Patch, $"api/v1/items/{itemId}",
             new { name, expected_revision = expectedRevision });
+
+    public Task<InventoryItem> ArchiveItemAsync(Guid itemId, string expectedRevision) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/items/{itemId}/archive",
+            new { expected_revision = expectedRevision });
+
+    public Task<InventoryItem> TrashItemAsync(Guid itemId, string expectedRevision) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/items/{itemId}/trash",
+            new { expected_revision = expectedRevision });
+
+    public Task<InventoryItem> RestoreItemAsync(Guid itemId, string expectedRevision) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/items/{itemId}/restore",
+            new { expected_revision = expectedRevision });
 
     public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision) =>
         SendJsonAsync<TransferOutcome>(HttpMethod.Post, $"api/v1/items/{itemId}/transfers",
@@ -368,7 +381,16 @@ public sealed record InventoryItem(
     [property: JsonPropertyName("inventory_number")] string InventoryNumber,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("revision")] string Revision,
-    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt);
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("state")] string? State = null)
+{
+    public string StateLabel => State switch
+    {
+        "archived" => "Archivé",
+        "trashed" => "Corbeille",
+        _ => "Actif",
+    };
+}
 public sealed record ItemPageResponse(
     [property: JsonPropertyName("items")] List<InventoryItem> Items,
     [property: JsonPropertyName("next_cursor")] string? NextCursor);

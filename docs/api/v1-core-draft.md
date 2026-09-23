@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage et transferts d'objets sont exposées ; la synchronisation reste à définir.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration et transferts d'objets sont exposées ; la synchronisation reste à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -16,7 +16,7 @@ Le numéro d'inventaire et la révision sont des chaînes décimales positives d
 
 `GET /api/v1/spaces` retourne `{"spaces":[...]}` avec les seuls espaces où le compte possède une adhésion et le droit explicite `collections_read`. `POST /api/v1/spaces` reçoit `{"name":"Ma collection"}` et crée un espace personnel (`201`) avec droits explicites `collections_read` et `collections_write` pour son propriétaire. Le partage par invitation SMTP est désormais disponible ; voir le README pour ses routes et limites. La création d'un espace partagé distinct reste à définir.
 
-`GET /api/v1/spaces/{space_id}/items` retourne `{"items":[...],"next_cursor":null}` trié par numéro d'inventaire. L'accès requiert une session, une adhésion et `collections_read`. Un membre sans droit reçoit `403`, un non-membre reçoit `404`. La taille de page `limit` vaut 50 par défaut et doit rester entre 1 et 100. `after` est le dernier numéro d'inventaire de la page précédente ; `next_cursor` contient ce numéro comme chaîne quand une autre page existe. `q` cherche une sous-chaîne dans le nom ; `%` et `_` sont des caractères ordinaires, pas des jokers. Une recherche vide liste tous les objets. Un curseur invalide, une limite hors plage ou une recherche de plus de 100 caractères reçoit `422`.
+`GET /api/v1/spaces/{space_id}/items` retourne `{"items":[...],"next_cursor":null}` trié par numéro d'inventaire. L'accès requiert une session, une adhésion et `collections_read`. Un membre sans droit reçoit `403`, un non-membre reçoit `404`. La taille de page `limit` vaut 50 par défaut et doit rester entre 1 et 100. `after` est le dernier numéro d'inventaire de la page précédente ; `next_cursor` contient ce numéro comme chaîne quand une autre page existe. `q` cherche une sous-chaîne dans le nom ; `%` et `_` sont des caractères ordinaires, pas des jokers. Une recherche vide liste tous les objets. `state` filtre selon `active` (défaut), `archived`, `trashed` ou `all`. Un curseur invalide, une limite hors plage, un état inconnu ou une recherche de plus de 100 caractères reçoit `422`.
 
 ## Créer un objet
 
@@ -40,6 +40,18 @@ Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou d
 
 `PATCH /api/v1/items/{item_id}` exige `collections_write` dans l'espace courant. Le corps contient `{"name":"Nouveau nom","expected_revision":"1"}`. Le nom est nettoyé et limité à 255 caractères comme à la création. La transaction verrouille l'objet, refuse une révision obsolète avec `409`, modifie le nom et incrémente la révision. Le numéro d'inventaire et l'identifiant stable ne changent pas. Cette première fiche éditable n'ajoute pas encore de description, catégories, emplacements ou champs personnalisés.
 
+## Archiver, mettre à la corbeille, restaurer
+
+`POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent `collections_write` dans l'espace courant. Le corps contient la révision lue par le client :
+
+```json
+{"expected_revision":"2"}
+```
+
+Les états sont `active`, `archived` et `trashed`, et chaque transition est réversible. Les transitions acceptées sont : `active → archived`, `active → trashed`, `archived → trashed`, `archived → active` et `trashed → active`. Une transition non listée reçoit `422` avec le code `invalid_transition`. Une révision obsolète reçoit `409` et n'est jamais remplacée silencieusement. La réponse `200` contient l'objet mis à jour, dont l'état et la révision incrémentée.
+
+L'identifiant stable, le numéro d'inventaire et l'historique des transferts sont conservés quel que soit l'état, et aucun numéro n'est réutilisé. Aucune suppression physique n'est exposée en V1. Un objet `trashed` est en lecture seule : le renommage et le transfert reçoivent `422` avec le code `invalid_state` tant qu'il n'est pas restauré. Chaque transition est auditée avec l'auteur et l'état avant/après.
+
 ## Transférer un objet
 
 `POST /api/v1/items/{item_id}/transfers` exige `collections_write` dans l'espace source et dans l'espace de destination. Le corps indique la destination et la révision lue par le client :
@@ -61,4 +73,4 @@ Le backend vérifie d'abord les droits dans les deux espaces. La transaction ver
 
 ## Hors de cette première tranche
 
-La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations à droits sélectionnables, la gestion des membres et le renommage simple sont exposés depuis le 2026-09-23 ; l'édition enrichie, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
+La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations à droits sélectionnables, la gestion des membres, le renommage simple, l'archivage et la corbeille sont exposés depuis le 2026-09-23 ; l'édition enrichie, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.

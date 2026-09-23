@@ -21,7 +21,7 @@ use crate::{
         SessionTokenError,
     },
     database::{
-        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemTransfer,
+        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState, ItemTransfer,
         MemberWithAccount, SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
     },
     invitations::{Invitation, InvitationError},
@@ -1024,6 +1024,7 @@ pub struct ItemResponse {
     pub space_id: Uuid,
     pub inventory_number: String,
     pub name: String,
+    pub state: String,
     pub revision: String,
     pub created_at: String,
 }
@@ -1034,6 +1035,7 @@ impl From<Item> for ItemResponse {
             space_id: value.space_id,
             inventory_number: value.inventory_number.to_string(),
             name: value.name,
+            state: value.state.as_str().to_owned(),
             revision: value.revision.to_string(),
             created_at: value.created_at.to_rfc3339(),
         }
@@ -1050,10 +1052,16 @@ struct ListItemsQuery {
     q: Option<String>,
     after: Option<String>,
     limit: Option<String>,
+    state: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateItemRequest {
     pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemStateRequest {
+    pub expected_revision: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1203,7 +1211,8 @@ async fn create_space(
     params(("space_id" = Uuid, Path, description = "Espace de collection"),
         ("q" = Option<String>, Query, description = "Recherche dans le nom"),
         ("after" = Option<String>, Query, description = "Dernier numero de la page precedente"),
-        ("limit" = Option<u32>, Query, description = "Taille de page, de 1 a 100")),
+        ("limit" = Option<u32>, Query, description = "Taille de page, de 1 a 100"),
+        ("state" = Option<String>, Query, description = "Etat: active (defaut), archived, trashed ou all")),
     responses((status = 200, body = ItemListResponse), (status = 401, body = ProblemDetails),
         (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
 async fn list_items(
@@ -1256,8 +1265,16 @@ async fn list_items(
             "invalid_search",
         ));
     }
+    let state = query.state.as_deref().unwrap_or("active");
+    if !matches!(state, "active" | "archived" | "trashed" | "all") {
+        return Err(ApiError::invalid_request(
+            uri.path(),
+            "Etat d'objet invalide.",
+            "invalid_state",
+        ));
+    }
     let mut items = database
-        .search_items_in_space(space_id, search, after, limit + 1)
+        .search_items_in_space(space_id, search, after, state, limit + 1)
         .await
         .map_err(|_| ApiError::internal(uri.path()))?;
     let has_more = items.len() > limit as usize;
@@ -1395,9 +1412,124 @@ async fn rename_item(
             }
             Some(InventoryError::RevisionConflict) => ApiError::revision_conflict(uri.path()),
             Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            Some(InventoryError::InvalidState) => ApiError::invalid_request(
+                uri.path(),
+                "Cet objet est dans la corbeille ; restaurez-le avant de le modifier.",
+                "invalid_state",
+            ),
             _ => ApiError::internal(uri.path()),
         })?;
     Ok(Json(item.into()))
+}
+
+/// Parses the expected revision, loads the item, checks space write access and applies a state.
+async fn transition_item(
+    state: &AppState,
+    item_id: Uuid,
+    payload: ItemStateRequest,
+    headers: &HeaderMap,
+    uri: &Uri,
+    target: ItemState,
+) -> Result<Json<ItemResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, headers, uri.path()).await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "La revision attendue doit etre un entier positif.",
+                "invalid_revision",
+            )
+        })?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let item = database
+        .set_item_state(item_id, target, expected_revision, principal.subject)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::RevisionConflict) => ApiError::revision_conflict(uri.path()),
+            Some(InventoryError::InvalidTransition) => ApiError::invalid_request(
+                uri.path(),
+                "Cette transition d'etat n'est pas autorisee.",
+                "invalid_transition",
+            ),
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok(Json(item.into()))
+}
+
+#[utoipa::path(post, path = "/api/v1/items/{item_id}/archive", tag = "collection", request_body = ItemStateRequest,
+    params(("item_id" = Uuid, Path, description = "Objet a archiver")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn archive_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ItemStateRequest>,
+) -> Result<Json<ItemResponse>, ApiError> {
+    transition_item(
+        &state,
+        item_id,
+        payload,
+        &headers,
+        &uri,
+        ItemState::Archived,
+    )
+    .await
+}
+
+#[utoipa::path(post, path = "/api/v1/items/{item_id}/trash", tag = "collection", request_body = ItemStateRequest,
+    params(("item_id" = Uuid, Path, description = "Objet a mettre a la corbeille")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn trash_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ItemStateRequest>,
+) -> Result<Json<ItemResponse>, ApiError> {
+    transition_item(&state, item_id, payload, &headers, &uri, ItemState::Trashed).await
+}
+
+#[utoipa::path(post, path = "/api/v1/items/{item_id}/restore", tag = "collection", request_body = ItemStateRequest,
+    params(("item_id" = Uuid, Path, description = "Objet a restaurer")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn restore_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ItemStateRequest>,
+) -> Result<Json<ItemResponse>, ApiError> {
+    transition_item(&state, item_id, payload, &headers, &uri, ItemState::Active).await
 }
 
 #[utoipa::path(post, path = "/api/v1/items/{item_id}/transfers", tag = "collection", request_body = TransferItemRequest,
@@ -1470,6 +1602,11 @@ async fn transfer_item(
             Some(InventoryError::ItemNotFound | InventoryError::SpaceNotFound) => {
                 ApiError::resource_not_found(uri.path())
             }
+            Some(InventoryError::InvalidState) => ApiError::invalid_request(
+                uri.path(),
+                "Cet objet est dans la corbeille ; restaurez-le avant de le transferer.",
+                "invalid_state",
+            ),
             _ => ApiError::internal(uri.path()),
         })?;
     Ok(Json(outcome.into()))
@@ -1572,6 +1709,9 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_item,
         get_item,
         rename_item,
+        archive_item,
+        trash_item,
+        restore_item,
         transfer_item,
         list_item_transfers,
         create_invitation,
@@ -1594,7 +1734,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         SpaceResponse, SpaceListResponse, CreateSpaceRequest,
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
-        ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest,
+        ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, ItemStateRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         IdleTimeout,
         Principal,
@@ -1721,6 +1861,18 @@ fn app_with_state(state: AppState) -> Router {
             .route(
                 &format!("{API_PREFIX}/items/{{item_id}}"),
                 get(get_item).patch(rename_item),
+            )
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}/archive"),
+                post(archive_item),
+            )
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}/trash"),
+                post(trash_item),
+            )
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}/restore"),
+                post(restore_item),
             )
             .route(
                 &format!("{API_PREFIX}/items/{{item_id}}/transfers"),

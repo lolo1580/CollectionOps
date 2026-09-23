@@ -12,6 +12,7 @@ public sealed partial class CollectionPage : Page
     private IReadOnlyList<CollectionSpace> _spaces = [];
     private bool _loadingSpaces;
     private string _search = string.Empty;
+    private string _stateFilter = "active";
     private string? _nextCursor;
     private bool _canReadActiveSpace;
 
@@ -33,14 +34,22 @@ public sealed partial class CollectionPage : Page
         await RefreshItemsAsync();
     }
 
+    private async void OnStateFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!Api.IsSignedIn) return;
+        _stateFilter = (StateFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "active";
+        await RefreshItemsAsync();
+    }
+
     private async void OnLoadMore(object sender, RoutedEventArgs e)
     {
         if (ActiveSpace is not { } space || _nextCursor is not { } cursor) return;
         var search = _search;
+        var state = _stateFilter;
         await RunAsync(async () =>
         {
-            var page = await Api.GetItemsPageAsync(space.Id, search, cursor);
-            if (ActiveSpace?.Id != space.Id || _search != search) return;
+            var page = await Api.GetItemsPageAsync(space.Id, search, cursor, state: state);
+            if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
             items.AddRange(page.Items);
             Items.ItemsSource = items;
@@ -63,7 +72,7 @@ public sealed partial class CollectionPage : Page
     private async void OnItemSelected(object sender, SelectionChangedEventArgs e)
     {
         SelectedItemName.Text = ActiveItem is { } item
-            ? $"{item.Name} — n° {item.InventoryNumber} (révision {item.Revision})"
+            ? $"{item.Name} — n° {item.InventoryNumber} (révision {item.Revision}, {item.StateLabel})"
             : "Sélectionnez un objet dans l'inventaire.";
         SelectedItemDetails.Text = ActiveItem is { } selected
             ? $"Identifiant : {selected.Id} · Créé le {selected.CreatedAt.ToLocalTime():g}"
@@ -94,6 +103,49 @@ public sealed partial class CollectionPage : Page
     }
 
     private async void OnRefreshHistory(object sender, RoutedEventArgs e) => await RefreshHistoryAsync();
+
+    private async void OnArchiveItem(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        await RunAsync(async () =>
+        {
+            var updated = await Api.ArchiveItemAsync(item.Id, item.Revision);
+            await RefreshItemsCoreAsync();
+            ShowStatus($"Objet archivé (révision {updated.Revision}).", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnTrashItem(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Mettre cet objet à la corbeille ?",
+            Content = $"{item.Name} quittera la vue courante. Il pourra être restauré depuis la corbeille.",
+            PrimaryButtonText = "Mettre à la corbeille",
+            CloseButtonText = "Annuler",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        await RunAsync(async () =>
+        {
+            var updated = await Api.TrashItemAsync(item.Id, item.Revision);
+            await RefreshItemsCoreAsync();
+            ShowStatus($"Objet mis à la corbeille (révision {updated.Revision}).", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnRestoreItem(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        await RunAsync(async () =>
+        {
+            var updated = await Api.RestoreItemAsync(item.Id, item.Revision);
+            await RefreshItemsCoreAsync();
+            ShowStatus($"Objet restauré (révision {updated.Revision}).", InfoBarSeverity.Success);
+        });
+    }
 
     private async void OnTransferItem(object sender, RoutedEventArgs e)
     {
@@ -304,7 +356,7 @@ public sealed partial class CollectionPage : Page
         _nextCursor = null;
         if (ActiveSpace is { } space && _canReadActiveSpace)
         {
-            var page = await Api.GetItemsPageAsync(space.Id, _search);
+            var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter);
             Items.ItemsSource = page.Items;
             _nextCursor = page.NextCursor;
         }
@@ -343,6 +395,9 @@ public sealed partial class CollectionPage : Page
         TransferButton.IsEnabled = false;
         RefreshHistoryButton.IsEnabled = false;
         SaveItemNameButton.IsEnabled = false;
+        ArchiveItemButton.IsEnabled = false;
+        TrashItemButton.IsEnabled = false;
+        RestoreItemButton.IsEnabled = false;
         InviteButton.IsEnabled = false;
         RefreshInvitationsButton.IsEnabled = false;
         SaveMemberRightsButton.IsEnabled = false;
@@ -367,6 +422,10 @@ public sealed partial class CollectionPage : Page
         TransferButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && DestinationSpaces.ItemsSource is not null;
         RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
         SaveItemNameButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        var activeItemState = ActiveItem?.State ?? "active";
+        ArchiveItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState == "active";
+        TrashItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState != "trashed";
+        RestoreItemButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && activeItemState != "active";
         InviteButton.IsEnabled = SharingPanel.Visibility == Visibility.Visible;
         RefreshInvitationsButton.IsEnabled = SharingPanel.Visibility == Visibility.Visible;
         RefreshMembersButton.IsEnabled = MembersPanel.Visibility == Visibility.Visible;

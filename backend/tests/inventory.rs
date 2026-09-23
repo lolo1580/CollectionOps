@@ -4,7 +4,8 @@
 //! `COLLECTIONOPS_TEST_DATABASE_URL` is set. Each test takes a process-wide lock because the
 //! suite shares one database and `sqlx::migrate!` is not concurrency-safe.
 
-use collectionops_backend::{BootstrapAdmin, Database, InventoryError, PasswordService};
+use collectionops_backend::{BootstrapAdmin, Database, InventoryError, ItemState, PasswordService};
+use sqlx::Row;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
@@ -525,5 +526,316 @@ async fn concurrent_transfers_of_the_same_item_are_serialized() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn archiving_and_restoring_cycle_through_the_states() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
+        .await
+        .unwrap();
+    assert_eq!(item.state, ItemState::Active, "a new item starts active");
+
+    let archived = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Archived,
+            item.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(archived.state, ItemState::Archived);
+    assert_eq!(archived.revision, item.revision + 1);
+    assert_eq!(
+        archived.inventory_number, item.inventory_number,
+        "the number never changes"
+    );
+
+    let restored = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Active,
+            archived.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.state, ItemState::Active);
+
+    let trashed = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Trashed,
+            restored.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(trashed.state, ItemState::Trashed);
+
+    let restored_again = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Active,
+            trashed.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored_again.state, ItemState::Active);
+    assert_eq!(
+        restored_again.id, item.id,
+        "the stable identifier is preserved across every transition"
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_transition_is_refused_and_changes_nothing() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
+        .await
+        .unwrap();
+
+    // An active item cannot be archived into the state it already has.
+    assert_eq!(
+        fixture
+            .database
+            .set_item_state(item.id, ItemState::Active, item.revision, fixture.owner_id)
+            .await
+            .err()
+            .and_then(|error| error.inventory_error()),
+        Some(InventoryError::InvalidTransition)
+    );
+
+    let current = fixture.database.item(item.id).await.unwrap();
+    assert_eq!(current.state, ItemState::Active);
+    assert_eq!(current.revision, item.revision);
+}
+
+#[tokio::test]
+async fn a_stale_state_revision_is_refused() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
+        .await
+        .unwrap();
+    fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Archived,
+            item.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fixture
+            .database
+            .set_item_state(item.id, ItemState::Trashed, item.revision, fixture.owner_id)
+            .await
+            .err()
+            .and_then(|error| error.inventory_error()),
+        Some(InventoryError::RevisionConflict)
+    );
+
+    let current = fixture.database.item(item.id).await.unwrap();
+    assert_eq!(current.state, ItemState::Archived);
+    assert_eq!(current.revision, item.revision + 1);
+}
+
+#[tokio::test]
+async fn a_trashed_item_cannot_be_renamed_or_transferred() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
+        .await
+        .unwrap();
+    let trashed = fixture
+        .database
+        .set_item_state(item.id, ItemState::Trashed, item.revision, fixture.owner_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fixture
+            .database
+            .rename_item(item.id, "Nouveau", trashed.revision)
+            .await
+            .err()
+            .and_then(|error| error.inventory_error()),
+        Some(InventoryError::InvalidState)
+    );
+    assert_eq!(
+        fixture
+            .database
+            .transfer_item(item.id, fixture.space_b, trashed.revision, fixture.owner_id)
+            .await
+            .err()
+            .and_then(|error| error.inventory_error()),
+        Some(InventoryError::InvalidState)
+    );
+
+    let restored = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Active,
+            trashed.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.state, ItemState::Active);
+}
+
+#[tokio::test]
+async fn the_state_filter_hides_archived_and_trashed_items() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let active = fixture
+        .database
+        .create_item(fixture.space_a, "Actif", fixture.owner_id)
+        .await
+        .unwrap();
+    let archived = fixture
+        .database
+        .create_item(fixture.space_a, "Archive", fixture.owner_id)
+        .await
+        .unwrap();
+    let trashed = fixture
+        .database
+        .create_item(fixture.space_a, "Corbeille", fixture.owner_id)
+        .await
+        .unwrap();
+    fixture
+        .database
+        .set_item_state(
+            archived.id,
+            ItemState::Archived,
+            archived.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    fixture
+        .database
+        .set_item_state(
+            trashed.id,
+            ItemState::Trashed,
+            trashed.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+
+    let visible = fixture
+        .database
+        .search_items_in_space(fixture.space_a, "", 0, "active", 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible.iter().map(|item| item.id).collect::<Vec<_>>(),
+        vec![active.id],
+        "the default view only shows active items"
+    );
+
+    let all = fixture
+        .database
+        .search_items_in_space(fixture.space_a, "", 0, "all", 50)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3);
+
+    let archived_only = fixture
+        .database
+        .search_items_in_space(fixture.space_a, "", 0, "archived", 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        archived_only.iter().map(|item| item.id).collect::<Vec<_>>(),
+        vec![archived.id]
+    );
+}
+
+#[tokio::test]
+async fn every_state_transition_is_audited_with_actor_and_states() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Objet", fixture.owner_id)
+        .await
+        .unwrap();
+    let archived = fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Archived,
+            item.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+    fixture
+        .database
+        .set_item_state(
+            item.id,
+            ItemState::Active,
+            archived.revision,
+            fixture.owner_id,
+        )
+        .await
+        .unwrap();
+
+    let rows = sqlx::query(
+        "SELECT event_code, state_before, state_after, actor_account_id \
+         FROM inventory_item_audit_events WHERE item_id = ? ORDER BY created_at, id",
+    )
+    .bind(item.id.to_string())
+    .fetch_all(fixture.database.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 2, "each transition appends one event");
+    let code: Vec<u8> = rows[0].try_get("event_code").unwrap();
+    let before: Vec<u8> = rows[0].try_get("state_before").unwrap();
+    let after: Vec<u8> = rows[0].try_get("state_after").unwrap();
+    let actor: Vec<u8> = rows[0].try_get("actor_account_id").unwrap();
+    assert_eq!(String::from_utf8(code).unwrap(), "archived");
+    assert_eq!(String::from_utf8(before).unwrap(), "active");
+    assert_eq!(String::from_utf8(after).unwrap(), "archived");
+    assert_eq!(
+        String::from_utf8(actor).unwrap(),
+        fixture.owner_id.to_string()
     );
 }

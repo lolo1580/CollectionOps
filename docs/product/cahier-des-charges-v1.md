@@ -1,6 +1,6 @@
 # Cahier des charges fonctionnel V1 — brouillon à valider
 
-- Statut : brouillon ; D01 à D04 et D11 à D15 sont validées. Les autres règles restent proposées.
+- Statut : brouillon ; D01 à D05 et D11 à D15 sont validées. Les autres règles restent proposées.
 - Jalon : 01 — Cahier des charges fonctionnel.
 - Références : [architecture](../architecture/overview.md), [frontière d'autorisation](../architecture/ADR-0002-authentication-boundary.md), [identifiants et sessions](../architecture/ADR-0003-local-credentials-and-sessions.md).
 
@@ -81,6 +81,7 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 | D02 | Chaque espace a un propriétaire ; lecture et modification sont attribuées explicitement, avec droits financiers séparés. | Les droits doivent être évalués dans le contexte de l'espace. La délégation de l'administration reste à préciser. |
 | D03 | Un objet appartient à un seul espace à la fois ; un transfert conserve son identité et son historique. | Le transfert change l'espace courant sans créer de nouvel objet. |
 | D04 | Un objet exige un nom ; le serveur attribue un identifiant stable et un numéro d'inventaire séquentiel, unique dans l'espace. | L'attribution du numéro doit être atomique et sûre en cas de créations concurrentes. Les autres champs obligatoires restent à préciser. |
+| D05 | Un objet est `active`, `archived` ou `trashed` (corbeille). Chaque état est réversible : l'archivage masque sans supprimer, la corbeille retire de la vue courante et peut être restaurée. Aucune suppression physique n'existe en V1. Un objet en corbeille est en lecture seule jusqu'à sa restauration. | Aucun numéro n'est réutilisé, l'identifiant et l'historique sont conservés quel que soit l'état. La suppression définitive, réservée au propriétaire, reste à concevoir hors V1. |
 | D11 | Lors d'un transfert, l'objet reçoit un nouveau numéro dans l'espace de destination ; l'ancien numéro reste dans l'historique. | Le numéro ne change pas l'identité stable de l'objet et les deux valeurs figurent dans l'enregistrement du transfert. |
 | D12 | Une invitation est adressée par e-mail, y compris à une personne qui n'a pas encore de compte. | L'acceptation doit vérifier que le compte contrôle l'adresse invitée ; le compte peut être créé pendant ce parcours. |
 | D13 | Seul le propriétaire d'un espace peut inviter ; le lien est à usage unique et expire après sept jours. Le propriétaire peut le révoquer ou le réémettre, ce qui invalide le lien précédent. | La durée, la consommation, la révocation et la réémission sont contrôlées côté serveur et auditées. |
@@ -91,7 +92,6 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 
 | ID | Décision attendue | Conditionne |
 |---|---|---|
-| D05 | Quelles sont les règles d'archivage, de corbeille, de conservation et de suppression définitive ? | Stockage, sauvegarde, droits, audit. |
 | D06 | Quelle visibilité donner aux prix et documents lorsque l'objet est partagé ? | Matrice des permissions, contrats API. |
 | D07 | Quelles règles de devise, taux historique, arrondi et valeur sans estimation appliquer ? | Calculs, budgets, rapports financiers. |
 | D09 | Quels conflits hors ligne peuvent être fusionnés automatiquement et lesquels exigent un choix humain ? | Protocole de synchronisation. |

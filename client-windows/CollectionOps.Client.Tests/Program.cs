@@ -10,12 +10,14 @@ await ReadCollectionWithSession();
 await TransferUsesExpectedRevision();
 await ReadTransferHistory();
 await ReadInventoryPage();
+await InventoryPageCarriesStateFilter();
+await ArchiveUsesExpectedRevision();
 await AcceptNewAccountInvitationWithoutLeakingTokenToUrl();
 await AcceptExistingAccountInvitationWithSession();
 await RejectInvitationForDifferentServer();
 await AdminCanListSpacesWithoutInventoryAccess();
 await MemberGrantUpdateSendsExplicitRights();
-Console.WriteLine("SessionApi: 13 checks passed.");
+Console.WriteLine("SessionApi: 15 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -183,6 +185,36 @@ static async Task MemberGrantUpdateSendsExplicitRights()
     Assert(result.Permissions.Contains("finance_read"), "The updated member grants must parse.");
     Assert(handler.LastPath == $"/api/v1/spaces/{space}/members/{member}/permissions", "Rights must target the selected member.");
     Assert(handler.LastBody?.Contains("\"finance_read\"") == true, "The financial grant must be explicit in the request.");
+}
+
+static async Task InventoryPageCarriesStateFilter()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"items":[{"id":"01900000-0000-7000-8000-000000000001","space_id":"01900000-0000-7000-8000-000000000002","inventory_number":"3","name":"Objet","revision":"4","created_at":"2026-09-23T10:00:00Z","state":"trashed"}],"next_cursor":null}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var page = await api.GetItemsPageAsync(Guid.Parse("01900000-0000-7000-8000-000000000002"), state: "trashed");
+    Assert(page.Items.Count == 1 && page.Items[0].State == "trashed", "The item state must parse.");
+    Assert(page.Items[0].StateLabel == "Corbeille", "The trashed state must have a French label.");
+    Assert(handler.LastQuery?.Contains("state=trashed") == true, "The state filter must be sent.");
+}
+
+static async Task ArchiveUsesExpectedRevision()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"id":"01900000-0000-7000-8000-000000000001","space_id":"01900000-0000-7000-8000-000000000002","inventory_number":"3","name":"Objet","revision":"2","created_at":"2026-09-23T10:00:00Z","state":"archived"}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var itemId = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var archived = await api.ArchiveItemAsync(itemId, "1");
+    Assert(archived.State == "archived" && archived.Revision == "2", "The archived item must parse.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/archive", "Archiving must target the selected item.");
+    Assert(handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true, "Archiving must send the displayed revision.");
+    Assert(handler.LastToken == "secret", "Archiving must carry the session token.");
 }
 
 static void Assert(bool condition, string message)

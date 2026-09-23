@@ -14,7 +14,7 @@ pub use credentials::{
     SessionToken, SessionTokenError, SessionTokenFingerprint, validate_bootstrap_password,
 };
 pub use database::{
-    AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item,
+    AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState,
     ItemTransfer, MAX_ITEM_NAME_CHARS, MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership,
     SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
 };

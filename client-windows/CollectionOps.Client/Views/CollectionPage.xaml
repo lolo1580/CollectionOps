@@ -85,13 +85,20 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="SearchText" PlaceholderText="Rechercher dans le nom" Width="280" />
                 <Button x:Name="SearchButton" Content="Rechercher" Click="OnSearch" />
+                <ComboBox x:Name="StateFilter" Header="État" Width="180" SelectionChanged="OnStateFilterChanged">
+                    <ComboBoxItem Content="Actifs" Tag="active" IsSelected="True" />
+                    <ComboBoxItem Content="Archivés" Tag="archived" />
+                    <ComboBoxItem Content="Corbeille" Tag="trashed" />
+                    <ComboBoxItem Content="Tous" Tag="all" />
+                </ComboBox>
             </StackPanel>
             <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="services:InventoryItem">
                         <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,8,0,8">
                             <TextBlock Text="{x:Bind InventoryNumber}" Width="80" FontWeight="SemiBold" />
-                            <TextBlock Text="{x:Bind Name}" Width="440" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{x:Bind Name}" Width="400" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{x:Bind StateLabel}" Width="90" Opacity="0.8" />
                         </StackPanel>
                     </DataTemplate>
                 </ListView.ItemTemplate>
@@ -104,6 +111,11 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="EditedItemName" Header="Nom" Width="360" />
                 <Button x:Name="SaveItemNameButton" Content="Enregistrer le nom" Click="OnSaveItemName" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="ArchiveItemButton" Content="Archiver" Click="OnArchiveItem" />
+                <Button x:Name="TrashItemButton" Content="Mettre à la corbeille" Click="OnTrashItem" />
+                <Button x:Name="RestoreItemButton" Content="Restaurer" Click="OnRestoreItem" />
             </StackPanel>
             <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">

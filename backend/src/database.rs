@@ -63,13 +63,61 @@ pub struct Database {
     pool: MySqlPool,
 }
 
-/// A collection item, with its server-assigned number and revision.
+/// The lifecycle state of an inventory item.
+///
+/// Every state is reversible: `archived` hides the item from the current view, `trashed` is the
+/// trash, and `active` is the normal working state. No state removes the item from the database,
+/// because the physical retention rules are not decided yet. A `trashed` item is read-only until
+/// it is restored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemState {
+    Active,
+    Archived,
+    Trashed,
+}
+
+impl ItemState {
+    /// The stable code persisted in MariaDB and exposed by the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::Trashed => "trashed",
+        }
+    }
+
+    /// Parses a persisted or query code, returning `None` for an unknown value.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            "trashed" => Some(Self::Trashed),
+            _ => None,
+        }
+    }
+
+    /// Returns whether a transition from `self` to `target` is one of the allowed moves.
+    #[must_use]
+    pub const fn can_transition_to(self, target: Self) -> bool {
+        matches!(
+            (self, target),
+            (Self::Active, Self::Archived | Self::Trashed)
+                | (Self::Archived, Self::Active | Self::Trashed)
+                | (Self::Trashed, Self::Active)
+        )
+    }
+}
+
+/// A collection item, with its server-assigned number, state and revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: Uuid,
     pub space_id: Uuid,
     pub inventory_number: u64,
     pub name: String,
+    pub state: ItemState,
     pub revision: u64,
     pub created_by_account_id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -111,6 +159,10 @@ pub enum InventoryError {
     InvalidName,
     /// The counter row for the space is missing, which means the space was created without one.
     CounterMissing,
+    /// The item state forbids this operation, for example renaming or transferring a trashed item.
+    InvalidState,
+    /// The requested state transition is not allowed from the current state.
+    InvalidTransition,
 }
 
 /// A space and its current owner.
@@ -628,15 +680,22 @@ impl Database {
         }
 
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
-        let revision: Option<u64> =
-            sqlx::query_scalar("SELECT revision FROM inventory_items WHERE id = ? FOR UPDATE")
+        let row =
+            sqlx::query("SELECT state, revision FROM inventory_items WHERE id = ? FOR UPDATE")
                 .bind(item_id.to_string())
                 .fetch_optional(&mut *transaction)
                 .await
-                .map_err(DatabaseError::Query)?;
-        let revision = revision.ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+                .map_err(DatabaseError::Query)?
+                .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+        let revision: u64 = row.try_get("revision").map_err(DatabaseError::Query)?;
         if revision != expected_revision {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
             return Err(DatabaseError::Inventory(InventoryError::RevisionConflict));
+        }
+        let current = decode_state(&row)?;
+        if current == ItemState::Trashed {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::InvalidState));
         }
         sqlx::query("UPDATE inventory_items SET name = ?, revision = revision + 1 WHERE id = ?")
             .bind(name)
@@ -644,6 +703,69 @@ impl Database {
             .execute(&mut *transaction)
             .await
             .map_err(DatabaseError::Query)?;
+        let item = fetch_item(&mut *transaction, item_id).await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+        Ok(item)
+    }
+
+    /// Changes an item's lifecycle state, refusing a stale revision or an invalid transition.
+    ///
+    /// The item row is locked so two concurrent transitions are serialized: the loser sees the
+    /// new revision and is refused. Every transition increments the revision and appends an audit
+    /// event with the actor and the exact before/after state. The whole operation is one
+    /// transaction, so a refused transition records nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Inventory`] for an unknown item, a stale revision, or a transition
+    /// that the current state does not allow.
+    pub async fn set_item_state(
+        &self,
+        item_id: Uuid,
+        target: ItemState,
+        expected_revision: u64,
+        actor_account_id: Uuid,
+    ) -> Result<Item, DatabaseError> {
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+        let row = sqlx::query(
+            "SELECT space_id, state, revision FROM inventory_items WHERE id = ? FOR UPDATE",
+        )
+        .bind(item_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?
+        .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
+
+        let revision: u64 = row.try_get("revision").map_err(DatabaseError::Query)?;
+        if revision != expected_revision {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::RevisionConflict));
+        }
+
+        let space_id = parse_uuid(&decode_text(&row, "space_id")?)?;
+        let current = decode_state(&row)?;
+        if !current.can_transition_to(target) {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::InvalidTransition));
+        }
+
+        sqlx::query("UPDATE inventory_items SET state = ?, revision = revision + 1 WHERE id = ?")
+            .bind(target.as_str())
+            .bind(item_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+
+        insert_item_state_audit(
+            &mut transaction,
+            item_id,
+            space_id,
+            actor_account_id,
+            current,
+            target,
+        )
+        .await?;
+
         let item = fetch_item(&mut *transaction, item_id).await?;
         transaction.commit().await.map_err(DatabaseError::Query)?;
         Ok(item)
@@ -670,7 +792,7 @@ impl Database {
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
 
         let row = sqlx::query(
-            "SELECT space_id, inventory_number, revision \
+            "SELECT space_id, inventory_number, state, revision \
              FROM inventory_items WHERE id = ? FOR UPDATE",
         )
         .bind(item_id.to_string())
@@ -688,6 +810,11 @@ impl Database {
         if revision != expected_revision {
             transaction.rollback().await.map_err(DatabaseError::Query)?;
             return Err(DatabaseError::Inventory(InventoryError::RevisionConflict));
+        }
+
+        if decode_state(&row)? == ItemState::Trashed {
+            transaction.rollback().await.map_err(DatabaseError::Query)?;
+            return Err(DatabaseError::Inventory(InventoryError::InvalidState));
         }
 
         if source_space_id == destination_space_id {
@@ -930,7 +1057,8 @@ impl Database {
         Ok(items)
     }
 
-    /// Returns at most `limit` items after an inventory number, optionally matching a name.
+    /// Returns at most `limit` items after an inventory number, optionally matching a name and
+    /// restricted to one lifecycle state. `state` is a validated code or `all`.
     /// The caller requests one extra row to determine whether another page exists.
     ///
     /// # Errors
@@ -941,19 +1069,23 @@ impl Database {
         space_id: Uuid,
         search: &str,
         after_inventory_number: u64,
+        state: &str,
         limit: u32,
     ) -> Result<Vec<Item>, DatabaseError> {
         let rows = sqlx::query(
-            "SELECT id, space_id, inventory_number, name, revision, created_by_account_id, created_at \
+            "SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
              FROM inventory_items \
              WHERE space_id = ? AND inventory_number > ? \
                AND (? = '' OR LOCATE(?, name) > 0) \
+               AND (? = 'all' OR state = ?) \
              ORDER BY inventory_number LIMIT ?",
         )
         .bind(space_id.to_string())
         .bind(after_inventory_number)
         .bind(search)
         .bind(search)
+        .bind(state)
+        .bind(state)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -1405,6 +1537,42 @@ async fn insert_member_audit(
     Ok(())
 }
 
+/// The audit event code for a state transition is named after its destination.
+fn state_event_code(target: ItemState) -> &'static str {
+    match target {
+        ItemState::Archived => "archived",
+        ItemState::Trashed => "trashed",
+        ItemState::Active => "restored",
+    }
+}
+
+async fn insert_item_state_audit(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    item_id: Uuid,
+    space_id: Uuid,
+    actor_id: Uuid,
+    before: ItemState,
+    after: ItemState,
+) -> Result<(), DatabaseError> {
+    sqlx::query(
+        "INSERT INTO inventory_item_audit_events \
+             (id, item_id, space_id, actor_account_id, event_code, state_before, state_after, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::now_v7().to_string())
+    .bind(item_id.to_string())
+    .bind(space_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(state_event_code(after))
+    .bind(before.as_str())
+    .bind(after.as_str())
+    .bind(Utc::now())
+    .execute(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+    Ok(())
+}
+
 async fn fetch_space<'e, E>(executor: E, space_id: Uuid) -> Result<Space, DatabaseError>
 where
     E: sqlx::Executor<'e, Database = sqlx::MySql>,
@@ -1431,7 +1599,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::MySql>,
 {
     let row = sqlx::query(
-        "SELECT id, space_id, inventory_number, name, revision, created_by_account_id, created_at \
+        "SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
          FROM inventory_items WHERE id = ?",
     )
     .bind(item_id.to_string())
@@ -1451,10 +1619,17 @@ fn decode_item(row: &sqlx::mysql::MySqlRow) -> Result<Item, DatabaseError> {
             .try_get("inventory_number")
             .map_err(DatabaseError::Query)?,
         name: row.try_get("name").map_err(DatabaseError::Query)?,
+        state: decode_state(row)?,
         revision: row.try_get("revision").map_err(DatabaseError::Query)?,
         created_by_account_id: parse_uuid(&decode_text(row, "created_by_account_id")?)?,
         created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
     })
+}
+
+/// Decodes the `state` column, treating an unknown value as a storage inconsistency.
+fn decode_state(row: &sqlx::mysql::MySqlRow) -> Result<ItemState, DatabaseError> {
+    ItemState::from_code(&decode_text(row, "state")?)
+        .ok_or(DatabaseError::Inventory(InventoryError::InvalidState))
 }
 
 async fn fetch_transfer<'e, E>(

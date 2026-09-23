@@ -88,6 +88,10 @@ Un transfert verrouille l'objet, vérifie la révision présentée par le client
 
 La création, la recherche paginée par espace, la lecture et le transfert des objets sont reliés à l'API et au client Windows. Le transfert exige l'écriture dans les espaces source et destination et une révision courante ; l'historique exige la lecture de tous les espaces qu'il mentionne.
 
+## Archivage et corbeille
+
+Un objet possède un état `active`, `archived` ou `trashed`. L'archivage et la mise à la corbeille sont réversibles, et aucune suppression physique n'est exposée en V1. Les routes `POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent l'écriture dans l'espace courant et la révision lue par le client. Une transition non autorisée reçoit `422`, une révision obsolète `409` sans rien modifier. Chaque transition incrémente la révision et ajoute un événement d'audit avec l'auteur et l'état avant/après. Un objet en corbeille est en lecture seule jusqu'à sa restauration. L'identifiant stable, le numéro d'inventaire et l'historique des transferts survivent à toutes les transitions, et les numéros ne sont jamais réutilisés.
+
 ## Routes de session
 
 | Méthode | Route | Rôle |
@@ -125,7 +129,7 @@ La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, gérer les membres si l'on est propriétaire ou administrateur, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour voir sa fiche, le renommer, le transférer et voir son historique. Un administrateur qui n'est pas membre peut administrer les droits sans consulter l'inventaire. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, gérer les membres si l'on est propriétaire ou administrateur, rechercher et parcourir l'inventaire page par page, filtrer par état (actifs, archivés, corbeille, tous), ajouter des objets, puis en sélectionner un pour voir sa fiche, le renommer, l'archiver, le mettre à la corbeille ou le restaurer, le transférer et voir son historique. Un administrateur qui n'est pas membre peut administrer les droits sans consulter l'inventaire. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 

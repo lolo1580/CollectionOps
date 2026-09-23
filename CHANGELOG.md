@@ -12,6 +12,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- États d'objet `active`, `archived` et `trashed` : archivage, corbeille et restauration réversibles, sans suppression physique en V1, avec conservation de l'identifiant, du numéro d'inventaire et de l'historique.
+- Routes `POST /api/v1/items/{item_id}/archive`, `/trash` et `/restore` exigeant l'écriture dans l'espace et la révision courante ; une transition non autorisée reçoit `422` et un objet en corbeille est refusé en écriture.
+- Filtre d'état sur la recherche paginée (`state=active|archived|trashed|all`, actifs par défaut) et table d'audit conservant l'auteur et l'état avant/après de chaque transition.
+- Client Windows : filtre d'état de l'inventaire et archivage, mise à la corbeille ou restauration de l'objet sélectionné.
+- Tests MariaDB des transitions, du verrouillage par révision et de l'audit, test HTTP des droits et des refus, et vérifications client de l'archivage et du filtre d'état.
 - Inventaire paginé par numéro (50 objets par défaut, maximum 100) et recherche littérale dans les noms, avec bouton de chargement des pages suivantes dans le client Windows.
 - Tests MariaDB de la pagination, des recherches et des paramètres invalides ; vérification client de l'encodage de recherche et du curseur.
 - Routes HTTP de transfert et d'historique des objets, avec droits sur les deux espaces, conflit de révision et protection des anciens espaces cités par l'historique.
