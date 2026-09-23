@@ -16,6 +16,7 @@ use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::{
+    acquisitions::{AcquisitionError, Offer, Vendor, Wish},
     credentials::{
         EmailAddress, IdleTimeout, InvitationToken, PasswordService, SessionToken,
         SessionTokenError,
@@ -572,8 +573,7 @@ fn login_response(issued: IssuedSession) -> LoginResponse {
     }
 }
 
-// At this stage every authenticated account may use collection features, but a space still
-// requires an explicit membership and grant. Other application permissions are never inferred.
+// Application-level collection and acquisition capabilities still require an explicit space grant.
 fn collection_principal(subject: Uuid, display_name: String, is_system_admin: bool) -> Principal {
     Principal {
         subject,
@@ -583,7 +583,13 @@ fn collection_principal(subject: Uuid, display_name: String, is_system_admin: bo
         } else {
             BTreeSet::default()
         },
-        permissions: [Permission::CollectionsRead, Permission::CollectionsWrite].into(),
+        permissions: [
+            Permission::CollectionsRead,
+            Permission::CollectionsWrite,
+            Permission::AcquisitionsRead,
+            Permission::AcquisitionsWrite,
+        ]
+        .into(),
     }
 }
 
@@ -658,6 +664,127 @@ impl From<Space> for SpaceResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SpaceListResponse {
     pub spaces: Vec<SpaceResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpacePermissionsResponse {
+    pub permissions: Vec<Permission>,
+}
+
+fn acquisition_error(error: &AcquisitionError, instance: &str) -> ApiError {
+    match error {
+        AcquisitionError::InvalidTitle => {
+            ApiError::invalid_request(instance, "Nom invalide.", "invalid_title")
+        }
+        AcquisitionError::InvalidNotes => {
+            ApiError::invalid_request(instance, "Notes trop longues.", "invalid_notes")
+        }
+        AcquisitionError::InvalidUrl => {
+            ApiError::invalid_request(instance, "Adresse web invalide.", "invalid_url")
+        }
+        AcquisitionError::DuplicateVendor => {
+            ApiError::conflict(instance, "Ce fournisseur existe déjà.", "duplicate_vendor")
+        }
+        AcquisitionError::WishNotFound | AcquisitionError::VendorNotFound => {
+            ApiError::resource_not_found(instance)
+        }
+        _ => ApiError::internal(instance),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WishResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub title: String,
+    pub search_notes: Option<String>,
+    pub created_at: String,
+}
+impl From<Wish> for WishResponse {
+    fn from(value: Wish) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            title: value.title,
+            search_notes: value.search_notes,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WishListResponse {
+    pub wishes: Vec<WishResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateWishRequest {
+    pub title: String,
+    pub search_notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct VendorResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub name: String,
+    pub website_url: Option<String>,
+    pub created_at: String,
+}
+impl From<Vendor> for VendorResponse {
+    fn from(value: Vendor) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            name: value.name,
+            website_url: value.website_url,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct VendorListResponse {
+    pub vendors: Vec<VendorResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateVendorRequest {
+    pub name: String,
+    pub website_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct OfferResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub wish_id: Uuid,
+    pub vendor_id: Uuid,
+    pub title: String,
+    pub source_url: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+impl From<Offer> for OfferResponse {
+    fn from(value: Offer) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            wish_id: value.wish_id,
+            vendor_id: value.vendor_id,
+            title: value.title,
+            source_url: value.source_url,
+            notes: value.notes,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct OfferListResponse {
+    pub offers: Vec<OfferResponse>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateOfferRequest {
+    pub vendor_id: Uuid,
+    pub title: String,
+    pub source_url: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1803,21 +1930,235 @@ async fn list_spaces(
             .membership(space.id, principal.subject)
             .await
             .map_err(|_| ApiError::internal(uri.path()))?;
-        if principal
-            .require_space_permission(
-                space.id,
-                membership
-                    .as_ref()
-                    .map(crate::database::Membership::as_space_membership)
-                    .as_ref(),
-                Permission::CollectionsRead,
-            )
-            .is_ok()
+        let membership = membership
+            .as_ref()
+            .map(crate::database::Membership::as_space_membership);
+        if [Permission::CollectionsRead, Permission::AcquisitionsRead]
+            .into_iter()
+            .any(|permission| {
+                principal
+                    .require_space_permission(space.id, membership.as_ref(), permission)
+                    .is_ok()
+            })
         {
             visible.push(space.into());
         }
     }
     Ok(Json(SpaceListResponse { spaces: visible }))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/my-permissions", tag = "sharing",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = SpacePermissionsResponse), (status = 401, body = ProblemDetails),
+        (status = 404, body = ProblemDetails)))]
+async fn my_space_permissions(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<SpacePermissionsResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let membership = db
+        .membership(space_id, principal.subject)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?
+        .ok_or_else(|| ApiError::resource_not_found(uri.path()))?;
+    Ok(Json(SpacePermissionsResponse {
+        permissions: membership.permissions.into_iter().collect(),
+    }))
+}
+
+async fn acquisitions_db<'a>(
+    state: &'a AppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    space_id: Uuid,
+    permission: Permission,
+) -> Result<&'a Database, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, headers, uri.path()).await?;
+    authorized_space(db, &principal, space_id, permission, uri.path()).await?;
+    Ok(db)
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/wishes", tag = "acquisitions",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = WishListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_wishes(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<WishListResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsRead,
+    )
+    .await?;
+    let wishes = db
+        .wishes_in_space(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(WishListResponse {
+        wishes: wishes.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/wishes", tag = "acquisitions",
+    request_body = CreateWishRequest,
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 201, body = WishResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn create_wish(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateWishRequest>,
+) -> Result<(StatusCode, Json<WishResponse>), ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let wish = db
+        .create_wish(space_id, &payload.title, payload.search_notes.as_deref())
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(wish.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/vendors", tag = "acquisitions",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = VendorListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_vendors(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<VendorListResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsRead,
+    )
+    .await?;
+    let vendors = db
+        .vendors_in_space(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(VendorListResponse {
+        vendors: vendors.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/vendors", tag = "acquisitions",
+    request_body = CreateVendorRequest,
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 201, body = VendorResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 409, body = ProblemDetails),
+        (status = 422, body = ProblemDetails)))]
+async fn create_vendor(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateVendorRequest>,
+) -> Result<(StatusCode, Json<VendorResponse>), ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let vendor = db
+        .create_vendor(space_id, &payload.name, payload.website_url.as_deref())
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(vendor.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/wishes/{wish_id}/offers", tag = "acquisitions",
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("wish_id" = Uuid, Path, description = "Envie")),
+    responses((status = 200, body = OfferListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_offers(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, wish_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<OfferListResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsRead,
+    )
+    .await?;
+    let offers = db
+        .offers_for_wish(space_id, wish_id)
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok(Json(OfferListResponse {
+        offers: offers.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/wishes/{wish_id}/offers", tag = "acquisitions",
+    request_body = CreateOfferRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("wish_id" = Uuid, Path, description = "Envie")),
+    responses((status = 201, body = OfferResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 422, body = ProblemDetails)))]
+async fn create_offer(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, wish_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateOfferRequest>,
+) -> Result<(StatusCode, Json<OfferResponse>), ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let offer = db
+        .create_offer(
+            space_id,
+            wish_id,
+            payload.vendor_id,
+            &payload.title,
+            payload.source_url.as_deref(),
+            payload.notes.as_deref(),
+        )
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(offer.into())))
 }
 
 #[utoipa::path(get, path = "/api/v1/admin/spaces", tag = "sharing",
@@ -3056,6 +3397,13 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         list_sessions,
         revoke_session,
         list_spaces,
+        my_space_permissions,
+        list_wishes,
+        create_wish,
+        list_vendors,
+        create_vendor,
+        list_offers,
+        create_offer,
         list_admin_spaces,
         create_space,
         list_categories,
@@ -3106,7 +3454,10 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         SessionListResponse,
         LoginRequest,
         LoginResponse,
-        SpaceResponse, SpaceListResponse, CreateSpaceRequest,
+        SpaceResponse, SpaceListResponse, SpacePermissionsResponse, CreateSpaceRequest,
+        WishResponse, WishListResponse, CreateWishRequest,
+        VendorResponse, VendorListResponse, CreateVendorRequest,
+        OfferResponse, OfferListResponse, CreateOfferRequest,
         CategoryResponse, CategoryListResponse, CreateCategoryRequest,
         CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest,
         LocationResponse, LocationListResponse, CreateLocationRequest,
@@ -3129,6 +3480,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         (name = "system", description = "État et métadonnées du service"),
         (name = "authentication", description = "Session et identité applicative"),
         (name = "collection", description = "Espaces et inventaire"),
+        (name = "acquisitions", description = "Envies, fournisseurs et offres sans montants"),
         (name = "sharing", description = "Invitations et partage des espaces")
     )
 )]
@@ -3259,6 +3611,26 @@ fn group_routes() -> Router<AppState> {
         )
 }
 
+fn acquisition_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/my-permissions"),
+            get(my_space_permissions),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/wishes"),
+            get(list_wishes).post(create_wish),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/vendors"),
+            get(list_vendors).post(create_vendor),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/wishes/{{wish_id}}/offers"),
+            get(list_offers).post(create_offer),
+        )
+}
+
 fn app_with_state(state: AppState) -> Router {
     let authentication = if state.database.is_some() {
         // Login is only reachable when a pool exists, so no handler has to cope with `None`.
@@ -3276,6 +3648,7 @@ fn app_with_state(state: AppState) -> Router {
             .merge(taxonomy_routes())
             .merge(location_routes())
             .merge(group_routes())
+            .merge(acquisition_routes())
             .route(
                 &format!("{API_PREFIX}/admin/spaces"),
                 get(list_admin_spaces),

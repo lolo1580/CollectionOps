@@ -1159,6 +1159,19 @@ impl Database {
         .await
         .map_err(DatabaseError::Query)?;
 
+        for permission in [Permission::AcquisitionsRead, Permission::AcquisitionsWrite] {
+            sqlx::query(
+                "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(space_id.to_string())
+            .bind(owner_account_id.to_string())
+            .bind(permission_code(permission))
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+        }
+
         let space = fetch_space(&mut *transaction, space_id).await?;
         transaction.commit().await.map_err(DatabaseError::Query)?;
 

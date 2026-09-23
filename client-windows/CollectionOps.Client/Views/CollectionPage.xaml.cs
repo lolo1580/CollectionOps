@@ -17,6 +17,10 @@ public sealed partial class CollectionPage : Page
     private string _stateFilter = "active";
     private string? _nextCursor;
     private bool _canReadActiveSpace;
+    private bool _canReadAcquisitions;
+    private bool _canWriteAcquisitions;
+    private bool _loadingWishes;
+    private IReadOnlyList<AcquisitionVendor> _vendors = [];
     private bool _loadingCategories;
     private Guid? _categoryFilter;
     private Guid? _locationFilter;
@@ -106,10 +110,12 @@ public sealed partial class CollectionPage : Page
             UpdateDestinationOptions();
             TransferHistory.ItemsSource = null;
             await RefreshMembersCoreAsync();
+            await RefreshMyPermissionsCoreAsync();
             await RefreshCategoriesCoreAsync();
             await RefreshLocationsCoreAsync();
             await RefreshGroupsCoreAsync();
             await RefreshItemsCoreAsync();
+            await RefreshAcquisitionsCoreAsync();
             await RefreshInvitationsCoreAsync();
         });
     }
@@ -397,6 +403,125 @@ public sealed partial class CollectionPage : Page
             ?? members.FirstOrDefault();
     }
 
+    private async Task RefreshMyPermissionsCoreAsync()
+    {
+        IReadOnlyList<string> permissions = [];
+        if (ActiveSpace is { } space &&
+            (!Api.CurrentIsSystemAdmin ||
+             (Members.ItemsSource as IEnumerable<SpaceMember>)?.Any(member => member.AccountId == Api.CurrentAccountId) == true))
+        {
+            permissions = await Api.GetMySpacePermissionsAsync(space.Id);
+        }
+        _canReadActiveSpace = permissions.Contains("collections_read");
+        _canReadAcquisitions = permissions.Contains("acquisitions_read");
+        _canWriteAcquisitions = permissions.Contains("acquisitions_write");
+        AcquisitionsPanel.Visibility = _canReadAcquisitions ? Visibility.Visible : Visibility.Collapsed;
+        UpdateButtons();
+    }
+
+    private async Task RefreshAcquisitionsCoreAsync()
+    {
+        if (ActiveSpace is not { } space || !_canReadAcquisitions)
+        {
+            Wishes.ItemsSource = null;
+            Vendors.ItemsSource = null;
+            OfferVendorChoices.ItemsSource = null;
+            WishOffers.ItemsSource = null;
+            _vendors = [];
+            return;
+        }
+        var previousWishId = (Wishes.SelectedItem as WishEntry)?.Id;
+        var previousVendorId = (OfferVendorChoices.SelectedItem as AcquisitionVendor)?.Id;
+        _vendors = await Api.GetVendorsAsync(space.Id);
+        Vendors.ItemsSource = _vendors;
+        OfferVendorChoices.ItemsSource = _vendors;
+        OfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == previousVendorId)
+            ?? _vendors.FirstOrDefault();
+        var wishes = await Api.GetWishesAsync(space.Id);
+        _loadingWishes = true;
+        try
+        {
+            Wishes.ItemsSource = wishes;
+            Wishes.SelectedItem = wishes.FirstOrDefault(wish => wish.Id == previousWishId)
+                ?? wishes.FirstOrDefault();
+        }
+        finally { _loadingWishes = false; }
+        await RefreshOffersCoreAsync();
+        UpdateButtons();
+    }
+
+    private async Task RefreshOffersCoreAsync()
+    {
+        if (ActiveSpace is not { } space || Wishes.SelectedItem is not WishEntry wish)
+        {
+            SelectedWishNotes.Text = "Choisissez une envie pour voir ses offres.";
+            WishOffers.ItemsSource = null;
+            return;
+        }
+        SelectedWishNotes.Text = wish.SearchNotes ?? "Aucune note de recherche.";
+        var offers = await Api.GetOffersAsync(space.Id, wish.Id);
+        if (ActiveSpace?.Id != space.Id || (Wishes.SelectedItem as WishEntry)?.Id != wish.Id) return;
+        WishOffers.ItemsSource = offers.Select(offer => new OfferLine(
+            $"{offer.Title} — {_vendors.FirstOrDefault(vendor => vendor.Id == offer.VendorId)?.Name ?? "Fournisseur inconnu"}" +
+            (offer.SourceUrl is null ? string.Empty : $" · {offer.SourceUrl}") +
+            (offer.Notes is null ? string.Empty : $" · {offer.Notes}"))).ToList();
+    }
+
+    private async void OnWishSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingWishes) return;
+        UpdateButtons();
+        await RunAsync(RefreshOffersCoreAsync);
+    }
+
+    private void OnOfferVendorSelected(object sender, SelectionChangedEventArgs e) => UpdateButtons();
+
+    private async void OnCreateWish(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewWishTitle.Text)) return;
+        await RunAsync(async () =>
+        {
+            var created = await Api.CreateWishAsync(space.Id, NewWishTitle.Text.Trim(), NewWishNotes.Text.Trim());
+            NewWishTitle.Text = string.Empty;
+            NewWishNotes.Text = string.Empty;
+            await RefreshAcquisitionsCoreAsync();
+            Wishes.SelectedItem = (Wishes.ItemsSource as IReadOnlyList<WishEntry>)?
+                .FirstOrDefault(wish => wish.Id == created.Id);
+            ShowStatus("Envie ajoutée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnCreateVendor(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewVendorName.Text)) return;
+        await RunAsync(async () =>
+        {
+            var created = await Api.CreateVendorAsync(space.Id, NewVendorName.Text.Trim(), NewVendorWebsite.Text.Trim());
+            NewVendorName.Text = string.Empty;
+            NewVendorWebsite.Text = string.Empty;
+            await RefreshAcquisitionsCoreAsync();
+            OfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == created.Id);
+            ShowStatus("Fournisseur ajouté.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnCreateOffer(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Wishes.SelectedItem is not WishEntry wish ||
+            OfferVendorChoices.SelectedItem is not AcquisitionVendor vendor ||
+            string.IsNullOrWhiteSpace(NewOfferTitle.Text)) return;
+        await RunAsync(async () =>
+        {
+            await Api.CreateOfferAsync(space.Id, wish.Id, vendor.Id, NewOfferTitle.Text.Trim(),
+                NewOfferUrl.Text.Trim(), NewOfferNotes.Text.Trim());
+            NewOfferTitle.Text = string.Empty;
+            NewOfferUrl.Text = string.Empty;
+            NewOfferNotes.Text = string.Empty;
+            await RefreshOffersCoreAsync();
+            ShowStatus("Offre ajoutée.", InfoBarSeverity.Success);
+        });
+    }
+
     private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id));
 
     private async Task LoadSpacesAsync(Guid? selectedId)
@@ -419,6 +544,7 @@ public sealed partial class CollectionPage : Page
         UpdateDestinationOptions();
         TransferHistory.ItemsSource = null;
         await RefreshMembersCoreAsync();
+        await RefreshMyPermissionsCoreAsync();
         await RefreshCategoriesCoreAsync();
         await RefreshLocationsCoreAsync();
         await RefreshGroupsCoreAsync();
@@ -428,6 +554,7 @@ public sealed partial class CollectionPage : Page
             ShowStatus("Aucun espace visible. Créez votre premier espace.", InfoBarSeverity.Informational);
         }
         else await RefreshItemsCoreAsync();
+        await RefreshAcquisitionsCoreAsync();
         await RefreshInvitationsCoreAsync();
         UpdateButtons();
     }
@@ -860,6 +987,9 @@ public sealed partial class CollectionPage : Page
         SaveItemDetailsButton.IsEnabled = false;
         SaveItemGroupsButton.IsEnabled = false;
         CreateGroupButton.IsEnabled = false;
+        CreateWishButton.IsEnabled = false;
+        CreateVendorButton.IsEnabled = false;
+        CreateOfferButton.IsEnabled = false;
         RenameGroupButton.IsEnabled = false;
         DeleteGroupButton.IsEnabled = false;
         ArchiveItemButton.IsEnabled = false;
@@ -899,6 +1029,10 @@ public sealed partial class CollectionPage : Page
         SaveItemDetailsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
         SaveItemGroupsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
         CreateGroupButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
+        CreateWishButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canWriteAcquisitions;
+        CreateVendorButton.IsEnabled = CreateWishButton.IsEnabled;
+        CreateOfferButton.IsEnabled = CreateWishButton.IsEnabled && Wishes.SelectedItem is WishEntry &&
+            OfferVendorChoices.SelectedItem is AcquisitionVendor;
         RenameGroupButton.IsEnabled = CreateGroupButton.IsEnabled && ManageGroups.SelectedItem is CollectionGroup;
         DeleteGroupButton.IsEnabled = RenameGroupButton.IsEnabled;
         var activeItemState = ActiveItem?.State ?? "active";

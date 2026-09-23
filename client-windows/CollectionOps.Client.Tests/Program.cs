@@ -27,7 +27,9 @@ await ReadLocationsAndMoveItem();
 await UpdateItemDetailsUsesRevision();
 await AssignGroupsAndFilterInventory();
 await RenameAndDeleteEmptyGroup();
-Console.WriteLine("SessionApi: 25 checks passed.");
+await ReadAcquisitionPermissionsAndWishes();
+await CreateVendorAndOfferWithoutAmounts();
+Console.WriteLine("SessionApi: 27 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -437,6 +439,50 @@ static async Task RenameAndDeleteEmptyGroup()
         handler.LastPath == $"/api/v1/spaces/{spaceId}/groups/{groupId}" &&
         handler.LastBody?.Contains("\"expected_revision\":\"2\"") == true,
         "Group deletion must target the selected group and carry its revision.");
+}
+
+static async Task ReadAcquisitionPermissionsAndWishes()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"permissions":["acquisitions_read"]}""");
+    var spaceId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"wishes\":[{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"title\":\"Casque M1\",\"search_notes\":\"Bon état\",\"created_at\":\"2026-09-23T10:00:00Z\"}}]}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("reader@example.org", "password");
+    var rights = await api.GetMySpacePermissionsAsync(spaceId);
+    Assert(rights.SequenceEqual(["acquisitions_read"]), "Acquisition rights must remain separate from collection and finance rights.");
+    var wishes = await api.GetWishesAsync(spaceId);
+    Assert(wishes.Count == 1 && wishes[0].Title == "Casque M1", "Wish list must parse.");
+    Assert(handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes" && handler.LastToken == "secret",
+        "Wish list must target the space with the session token.");
+}
+
+static async Task CreateVendorAndOfferWithoutAmounts()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var wishId = Guid.NewGuid();
+    var vendorId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created,
+        $"{{\"id\":\"{vendorId}\",\"space_id\":\"{spaceId}\",\"name\":\"Marchand A\",\"website_url\":null,\"created_at\":\"2026-09-23T10:00:00Z\"}}");
+    handler.Enqueue(HttpStatusCode.Created,
+        $"{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"wish_id\":\"{wishId}\",\"vendor_id\":\"{vendorId}\",\"title\":\"Casque original\",\"source_url\":null,\"notes\":null,\"created_at\":\"2026-09-23T10:00:00Z\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("writer@example.org", "password");
+    var vendor = await api.CreateVendorAsync(spaceId, "Marchand A", null);
+    Assert(vendor.Id == vendorId && handler.LastBody?.Contains("\"name\":\"Marchand A\"") == true,
+        "Vendor creation must target the chosen space.");
+    var offer = await api.CreateOfferAsync(spaceId, wishId, vendorId, "Casque original", null, null);
+    Assert(offer.VendorId == vendorId && handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes/{wishId}/offers",
+        "Offer creation must link the wish and vendor.");
+    Assert(handler.LastBody?.Contains("\"vendor_id\"") == true &&
+        !handler.LastBody.Contains("price") && !handler.LastBody.Contains("amount"),
+        "This first acquisition slice must not send financial amounts.");
 }
 
 static void Assert(bool condition, string message)

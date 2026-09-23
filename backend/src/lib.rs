@@ -1,3 +1,4 @@
+mod acquisitions;
 mod config;
 mod credentials;
 mod database;
@@ -10,6 +11,7 @@ mod security;
 mod taxonomy;
 pub mod testing;
 
+pub use acquisitions::{AcquisitionError, Offer, Vendor, Wish};
 pub use config::{AppConfig, BootstrapAdmin, ConfigError};
 pub use credentials::{
     EmailAddress, EmailAddressError, IdleTimeout, InvitationToken, InvitationTokenError,

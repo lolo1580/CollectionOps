@@ -116,6 +116,47 @@ public sealed class SessionApi : IDisposable
     public Task<CollectionSpace> CreateSpaceAsync(string name) =>
         SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
 
+    public async Task<IReadOnlyList<string>> GetMySpacePermissionsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<SpacePermissionsResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/my-permissions");
+        return result.Permissions;
+    }
+
+    public async Task<IReadOnlyList<WishEntry>> GetWishesAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<WishListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/wishes");
+        return result.Wishes;
+    }
+
+    public Task<WishEntry> CreateWishAsync(Guid spaceId, string title, string? searchNotes) =>
+        SendJsonAsync<WishEntry>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/wishes",
+            new { title, search_notes = searchNotes });
+
+    public async Task<IReadOnlyList<AcquisitionVendor>> GetVendorsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<VendorListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/vendors");
+        return result.Vendors;
+    }
+
+    public Task<AcquisitionVendor> CreateVendorAsync(Guid spaceId, string name, string? websiteUrl) =>
+        SendJsonAsync<AcquisitionVendor>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/vendors",
+            new { name, website_url = websiteUrl });
+
+    public async Task<IReadOnlyList<AcquisitionOffer>> GetOffersAsync(Guid spaceId, Guid wishId)
+    {
+        var result = await SendJsonAsync<OfferListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/wishes/{wishId}/offers");
+        return result.Offers;
+    }
+
+    public Task<AcquisitionOffer> CreateOfferAsync(Guid spaceId, Guid wishId, Guid vendorId,
+        string title, string? sourceUrl, string? notes) =>
+        SendJsonAsync<AcquisitionOffer>(HttpMethod.Post,
+            $"api/v1/spaces/{spaceId}/wishes/{wishId}/offers",
+            new { vendor_id = vendorId, title, source_url = sourceUrl, notes });
+
     public async Task<IReadOnlyList<CollectionCategory>> GetCategoriesAsync(Guid spaceId)
     {
         var result = await SendJsonAsync<CategoryListResponse>(HttpMethod.Get,
@@ -457,6 +498,35 @@ public sealed record CollectionSpace(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("owner_account_id")] Guid OwnerAccountId);
 public sealed record SpaceListResponse([property: JsonPropertyName("spaces")] List<CollectionSpace> Spaces);
+public sealed record SpacePermissionsResponse([property: JsonPropertyName("permissions")] List<string> Permissions);
+public sealed record WishEntry(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("search_notes")] string? SearchNotes,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt);
+public sealed record WishListResponse([property: JsonPropertyName("wishes")] List<WishEntry> Wishes);
+public sealed record AcquisitionVendor(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("website_url")] string? WebsiteUrl,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+{
+    public string Label => WebsiteUrl is null ? Name : $"{Name} · {WebsiteUrl}";
+}
+public sealed record VendorListResponse([property: JsonPropertyName("vendors")] List<AcquisitionVendor> Vendors);
+public sealed record AcquisitionOffer(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("wish_id")] Guid WishId,
+    [property: JsonPropertyName("vendor_id")] Guid VendorId,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("source_url")] string? SourceUrl,
+    [property: JsonPropertyName("notes")] string? Notes,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt);
+public sealed record OfferListResponse([property: JsonPropertyName("offers")] List<AcquisitionOffer> Offers);
+public sealed record OfferLine(string Label);
 public sealed record SpaceInvitation(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("recipient_email")] string RecipientEmail,

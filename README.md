@@ -72,7 +72,7 @@ Les invitations utilisent un jeton opaque de 256 bits ; seule son empreinte est 
 
 ## Espaces, adhésions et autorisation
 
-Créer un espace établit ensemble l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire, qui reçoit `collections_read` et `collections_write`. La propriété n'accorde **aucun** droit financier, et aucune permission globale ne peut être enregistrée comme droit d'espace.
+Créer un espace établit ensemble l'espace, sa ligne de compteur d'inventaire et l'adhésion de son propriétaire, qui reçoit `collections_read`, `collections_write`, `acquisitions_read` et `acquisitions_write`. La propriété n'accorde **aucun** droit financier, et aucune permission globale ne peut être enregistrée comme droit d'espace.
 
 Chaque opération sur un espace doit vérifier deux choses : une permission applicative portée par l'identité, et un droit explicite dans cet espace, chargé depuis la base. Un identifiant d'espace connu ne suffit jamais. Les droits sont relus à chaque opération, donc un droit retiré cesse immédiatement d'agir, même si le client le croit encore valide.
 
@@ -101,6 +101,10 @@ Les emplacements physiques sont propres à chaque espace et peuvent être imbriq
 L'inventaire peut être filtré par catégorie ou emplacement, descendants compris, tout en conservant la recherche, le filtre d'état et la pagination. Le client Windows propose ces filtres dans l'écran Collection.
 
 Chaque fiche possède aussi une description (10 000 caractères maximum), une référence historique et une référence technique (500 caractères chacune). Les valeurs vides sont enregistrées comme absentes. Une série ou un regroupement est nommé dans son espace ; un objet peut appartenir à plusieurs de chaque type. Le client Windows permet de les créer, renommer, classer et filtrer. La suppression d'un ensemble exige qu'il soit vide et une confirmation dans le client. Les affectations sont retirées lors d'un transfert vers un autre espace, tandis que la description et les références suivent l'objet.
+
+## Préparation des acquisitions
+
+Un espace peut tenir une liste d'envies, un répertoire de vendeurs et des offres rattachées à une envie et à un vendeur du même espace. Cette première tranche enregistre seulement les intitulés, notes et liens : **aucun prix, montant ou achat effectif**. Les liens doivent être HTTP(S) et ne peuvent pas contenir d'identifiants. La lecture exige `acquisitions_read`, la création `acquisitions_write` ; les droits de collection ou financiers ne sont pas implicites. Le propriétaire reçoit ces deux droits lors de la création de l'espace, et la migration les ajoute aux propriétaires des espaces existants. Le client Windows affiche les envies, vendeurs et offres selon les droits effectifs du membre.
 
 ## Archivage et corbeille
 
@@ -134,12 +138,13 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 | `GET` | `/api/v1/spaces/{space_id}/members` | Propriétaire ou administrateur : lister les membres et leurs droits |
 | `PUT` | `/api/v1/spaces/{space_id}/members/{account_id}/permissions` | Propriétaire ou administrateur : remplacer les droits explicites d'un autre membre |
 | `DELETE` | `/api/v1/spaces/{space_id}/members/{account_id}` | Propriétaire ou administrateur : retirer un membre autre que le propriétaire |
+| `GET` | `/api/v1/spaces/{space_id}/my-permissions` | Membre : lire ses droits explicites dans l'espace |
 
 Le destinataire avec un compte existant doit se connecter avec l'adresse e-mail invitée, déjà vérifiée. Un destinataire sans compte crée son compte depuis le lien reçu ; la possession du lien prouve alors l'adresse. L'acceptation, la création éventuelle du compte, l'adhésion et les droits sont atomiques. Une invitation expirée, révoquée, déjà acceptée ou adressée à un membre existant ne modifie pas les droits. Les créations, révocations et acceptations sont auditées.
 
 Le lien `collectionops://invite/...?...` se colle dans **Compte → Accepter une invitation** du client Windows. Il n'est pas encore associé automatiquement au protocole Windows ; le collage est nécessaire. Le lien contient l'adresse HTTPS du serveur configurée par l'exploitant, et le client refuse de transmettre le jeton si son adresse de serveur ne correspond pas. Le jeton n'est jamais placé dans une URL HTTP.
 
-La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`, la description et les références par `PUT /api/v1/items/{item_id}/details`, ainsi que les catégories, leurs champs personnalisés, les séries/regroupements et l'emplacement courant. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
+La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`, la description et les références par `PUT /api/v1/items/{item_id}/details`, ainsi que les catégories, leurs champs personnalisés, les séries/regroupements et l'emplacement courant. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. Les routes des envies, vendeurs et offres sont détaillées dans le [contrat API](docs/api/v1-core-draft.md). Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
 
 ## Démarrer le client Windows
 

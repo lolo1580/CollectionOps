@@ -17,6 +17,9 @@
 | Transfert | Objet, espace source, espace cible, auteur, date, références des numéros d'inventaire. | Retrace chaque changement d'espace sans changer l'identité de l'objet. |
 | Emplacement physique | Identifiant, espace, parent facultatif, nom. | Arbre propre à l'espace ; un objet référence au plus un emplacement courant. |
 | Mouvement d'emplacement | Objet, espace, emplacement source et cible facultatifs, auteur, date. | Historique append-only des déplacements, limité à l'espace concerné. |
+| Envie | Identifiant, espace, intitulé, notes de recherche facultatives. | Appartient à un espace et peut recevoir plusieurs offres. |
+| Vendeur | Identifiant, espace, nom unique dans l'espace, site Web facultatif. | Peut être associé à plusieurs offres du même espace. |
+| Offre repérée | Identifiant, espace, envie, vendeur, intitulé, lien source et notes facultatifs. | Lie une envie et un vendeur du même espace, sans prix ni commande. |
 
 Le premier administrateur est provisionné à l'installation. Aucun compte public ne peut être créé par une route d'inscription libre. Une invitation peut cibler une adresse sans compte. Elle ne devient une adhésion qu'après acceptation par un compte ayant vérifié cette adresse ; le compte peut être créé pendant ce parcours. Le seul fait de connaître l'adresse ne suffit pas.
 
@@ -51,9 +54,9 @@ Le `Principal` actuel expose des permissions effectives sans contexte d'espace. 
 
 La forme du jeton et le contenu du `Principal` ne doivent pas être utilisés comme source unique des adhésions : leur révocation et leurs changements doivent prendre effet selon une politique de session validée.
 
-**État : implémenté et couvert par des tests.** `create_space`, `membership`, `add_member`, `set_member_permissions`, `remove_member` et `space_members` existent, et les tests appellent réellement `require_space_permission` après avoir chargé l'adhésion depuis la base. Aucune route HTTP correspondante n'est encore exposée.
+**État : implémenté et couvert par des tests.** `create_space`, `membership`, `add_member`, `set_member_permissions`, `remove_member` et `space_members` existent, et les tests appellent réellement `require_space_permission` après avoir chargé l'adhésion depuis la base. Les routes HTTP des espaces et des membres sont exposées.
 
-La création d'un espace établit ensemble l'espace, la ligne de compteur et l'adhésion du propriétaire avec `collections_read` et `collections_write`. Le propriétaire ne reçoit **aucun** droit financier, et aucune permission globale ne peut être stockée comme droit d'espace.
+La création d'un espace établit ensemble l'espace, la ligne de compteur et l'adhésion du propriétaire avec `collections_read`, `collections_write`, `acquisitions_read` et `acquisitions_write`. Le propriétaire ne reçoit **aucun** droit financier, et aucune permission globale ne peut être stockée comme droit d'espace.
 
 ## Questions restantes pour les extensions
 
@@ -66,6 +69,8 @@ Ces réponses guident les migrations et routes complémentaires. La première tr
 La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail et les mots de passe, la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions, la [migration des invitations](../../backend/migrations/202609230001_space_invitations.sql) ajoute les liens et leurs droits, la [migration d'audit des membres](../../backend/migrations/202609230002_member_audit.sql) conserve chaque changement de droits ou retrait avec auteur, cible et droits avant/après, la [migration des états d'objet](../../backend/migrations/202609230003_item_states.sql) ajoute l'état et son audit, la [migration des catégories](../../backend/migrations/202609230004_categories_fields.sql) ajoute l'arbre par espace, les définitions de champs, les classements d'objets et leurs valeurs typées, la [migration des emplacements](../../backend/migrations/202609230005_locations.sql) ajoute l'arbre physique et le journal des déplacements, et la [migration des détails et regroupements](../../backend/migrations/202609230006_item_details_groups.sql) ajoute les références et les ensembles par espace. SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini. Le [brouillon SQL](../schema/invitations-draft.sql) reste une référence de conception, non une migration à exécuter.
 
 La [migration de révision des ensembles](../../backend/migrations/202609230007_groups_revision.sql) ajoute un compteur de version pour protéger leur renommage et leur suppression contre les modifications concurrentes.
+
+La [migration de préparation des acquisitions](../../backend/migrations/202609230008_acquisition_prospects.sql) crée les envies, les vendeurs et les offres sans colonne monétaire. Les clés étrangères composites `(space_id, id)` empêchent d'associer une envie ou un vendeur d'un autre espace. Elle attribue également `acquisitions_read` et `acquisitions_write` aux propriétaires des espaces déjà créés, sans leur donner les droits financiers.
 
 Les catégories ont un parent facultatif dans le même espace et un nom unique parmi leurs sœurs. Un objet peut avoir plusieurs affectations actives ; chaque affectation possède ses valeurs de champs. Les champs de chaque ancêtre sont disponibles sur un objet classé dans une sous-catégorie. Si plusieurs branches donnent accès au même champ, l'API présente une seule valeur effective par identifiant de champ. Au transfert, les affectations actives de la source sont terminées et de nouvelles affectations sont créées dans la destination choisie explicitement, dans la même transaction que la renumérotation ; les anciennes valeurs restent historiques et ne traversent pas les espaces.
 
