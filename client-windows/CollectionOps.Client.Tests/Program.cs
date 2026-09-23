@@ -21,7 +21,10 @@ await MemberGrantUpdateSendsExplicitRights();
 await ReadNestedCategories();
 await AssignCategoriesAndWriteInheritedField();
 await TransferWithDestinationCategories();
-Console.WriteLine("SessionApi: 19 checks passed.");
+await ReplaceCategoriesAllowsEmptySelection();
+await InventoryPageCarriesCategoryFilter();
+await ReadLocationsAndMoveItem();
+Console.WriteLine("SessionApi: 22 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -164,6 +167,75 @@ static async Task TransferWithDestinationCategories()
     await api.TransferItemAsync(itemId, destinationId, "1", [categoryId]);
     Assert(handler.LastBody?.Contains($"\"destination_category_ids\":[\"{categoryId}\"]") == true,
         "Transfer must send explicit destination classification.");
+}
+
+static async Task ReplaceCategoriesAllowsEmptySelection()
+{
+    var handler = new FakeHandler();
+    var itemId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"revision":"7","categories":[]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var result = await api.ReplaceItemCategoriesAsync(itemId, [], "6");
+    Assert(result.Revision == "7" && result.Categories.Count == 0,
+        "Replacing categories must allow an empty active classification.");
+    Assert(handler.LastMethod == HttpMethod.Put && handler.LastPath == $"/api/v1/items/{itemId}/categories",
+        "Replacing categories must use PUT on the item route.");
+    Assert(handler.LastBody?.Contains("\"category_ids\":[]") == true &&
+        handler.LastBody.Contains("\"expected_revision\":\"6\"") && handler.LastToken == "secret",
+        "Replacing categories must send the full selection and current revision with a session.");
+}
+
+static async Task InventoryPageCarriesCategoryFilter()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var categoryId = Guid.NewGuid();
+    var locationId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"items":[],"next_cursor":null}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    await api.GetItemsPageAsync(spaceId, after: "7", categoryId: categoryId, locationId: locationId);
+    Assert(handler.LastQuery?.Contains($"category_id={categoryId}") == true &&
+        handler.LastQuery.Contains($"location_id={locationId}") && handler.LastQuery.Contains("after=7"),
+        "Category and location filters must be kept when loading another inventory page.");
+}
+
+static async Task ReadLocationsAndMoveItem()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var rootId = Guid.NewGuid();
+    var childId = Guid.NewGuid();
+    var itemId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"locations\":[{{\"id\":\"{rootId}\",\"space_id\":\"{spaceId}\",\"parent_id\":null,\"name\":\"Pièce\"}},{{\"id\":\"{childId}\",\"space_id\":\"{spaceId}\",\"parent_id\":\"{rootId}\",\"name\":\"Étagère\"}}]}}");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"revision\":\"2\",\"location\":{{\"id\":\"{childId}\",\"space_id\":\"{spaceId}\",\"parent_id\":\"{rootId}\",\"name\":\"Étagère\"}}}}");
+    handler.Enqueue(HttpStatusCode.OK, """{"revision":"3","location":null}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"events\":[{{\"id\":\"{Guid.NewGuid()}\",\"from_location_id\":\"{childId}\",\"from_location_name\":\"Étagère\",\"to_location_id\":null,\"to_location_name\":null,\"actor_display_name\":\"Owner\",\"created_at\":\"2026-09-23T10:00:00Z\"}}]}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var locations = await api.GetLocationsAsync(spaceId);
+    Assert(locations.Count == 2 && locations[1].ParentId == rootId,
+        "The location hierarchy must preserve parent IDs.");
+    var current = await api.GetItemLocationAsync(itemId);
+    Assert(current.Location?.Id == childId, "The sole current location must parse.");
+    var cleared = await api.MoveItemLocationAsync(itemId, null, "2");
+    Assert(cleared.Location is null && handler.LastMethod == HttpMethod.Put &&
+        handler.LastBody?.Contains("\"location_id\":null") == true &&
+        handler.LastBody.Contains("\"expected_revision\":\"2\""),
+        "Removing a location must send an explicit null and current revision.");
+    var events = await api.GetItemLocationEventsAsync(itemId);
+    Assert(events.Single().Description.Contains("Sans emplacement") && handler.LastToken == "secret",
+        "Movement history must be readable through the authenticated client.");
 }
 
 static async Task ReadStateAuditHistory()
@@ -321,6 +393,7 @@ sealed class FakeHandler : HttpMessageHandler
 {
     private readonly Queue<HttpResponseMessage> _responses = new();
     public string? LastToken { get; private set; }
+    public HttpMethod? LastMethod { get; private set; }
     public string? LastPath { get; private set; }
     public string? LastQuery { get; private set; }
     public string? LastBody { get; private set; }
@@ -332,6 +405,7 @@ sealed class FakeHandler : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        LastMethod = request.Method;
         LastToken = request.Headers.TryGetValues("x-session-token", out var values)
             ? values.Single()
             : null;

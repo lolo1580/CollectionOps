@@ -42,7 +42,10 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 | F08 | Les fiches acceptent des champs adaptés à la collection et des références historiques ou techniques. | Les valeurs saisies sont restituées après sauvegarde et restent associées au bon objet. |
 | F08a | Les catégories sont propres à un espace, imbriquées et multiples par objet ; leurs champs texte, nombre et date sont hérités par les sous-catégories. | Un champ d'ancêtre apparaît une seule fois même si l'objet est classé dans plusieurs branches ; les catégories d'un autre espace sont refusées. |
 | F08b | Un transfert d'objet déjà classé exige le choix explicite de catégories de destination. | Un transfert sans choix est refusé ; les anciennes valeurs restent historiques sans être révélées dans l'espace de destination. |
+| F08c | Le classement d'un objet peut être remplacé ou vidé sans effacer son historique. | Les champs encore applicables gardent leur valeur, les autres quittent la fiche courante ; une révision obsolète est refusée sans changement partiel. |
 | F09 | Les transferts d'emplacement sont traçables. | L'emplacement courant et les transferts passés peuvent être consultés par un utilisateur autorisé. |
+| F09a | Les emplacements physiques forment une hiérarchie par espace ; un objet possède au plus une position courante. | Chaque déplacement ou retrait d'emplacement conserve son auteur et ses positions avant/après. Un transfert entre espaces libère l'ancienne position sans exposer son historique au nouvel espace. |
+| F09b | La recherche d'inventaire filtre une catégorie ou un emplacement et leurs descendants. | Les filtres se combinent avec l'état, le nom et la pagination sans afficher les objets d'un autre espace. |
 | F10 | Les suppressions suivent une corbeille et une politique de restauration. | Un élément supprimé n'apparaît plus dans la vue courante ; sa restauration, si autorisée, restitue ses relations conservées. |
 
 ### Acquisitions et finances

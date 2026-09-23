@@ -3,6 +3,7 @@ mod credentials;
 mod database;
 mod http;
 mod invitations;
+mod locations;
 mod mail;
 mod security;
 mod taxonomy;
@@ -15,15 +16,17 @@ pub use credentials::{
     SessionToken, SessionTokenError, SessionTokenFingerprint, validate_bootstrap_password,
 };
 pub use database::{
-    AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item, ItemState,
-    ItemStateEvent, ItemTransfer, MAX_ITEM_NAME_CHARS, MAX_SPACE_NAME_CHARS, MemberWithAccount,
-    Membership, SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
+    AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item,
+    ItemSearchFilters, ItemState, ItemStateEvent, ItemTransfer, MAX_ITEM_NAME_CHARS,
+    MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership, SessionError, SessionRecord, Space,
+    SpaceError, TransferOutcome,
 };
 pub use http::{
     API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database,
     app_with_database_and_mail,
 };
 pub use invitations::{Invitation, InvitationError, IssuedInvitation};
+pub use locations::{ItemLocationEvent, Location, LocationError};
 pub use mail::{MailConfigError, SmtpDelivery};
 pub use security::{
     AuthorizationError, Permission, Principal, SpaceAuthorizationError, SpaceMembership,

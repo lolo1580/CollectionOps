@@ -17,8 +17,14 @@ public sealed partial class CollectionPage : Page
     private string _stateFilter = "active";
     private string? _nextCursor;
     private bool _canReadActiveSpace;
+    private bool _loadingCategories;
+    private Guid? _categoryFilter;
+    private Guid? _locationFilter;
+    private bool _loadingLocations;
     private IReadOnlyList<CollectionCategory> _categories = [];
+    private IReadOnlyList<CollectionLocation> _locations = [];
     private int _assignedCategoryCount;
+    private HashSet<Guid> _assignedCategoryIds = [];
 
     public CollectionPage()
     {
@@ -45,15 +51,33 @@ public sealed partial class CollectionPage : Page
         await RefreshItemsAsync();
     }
 
+    private async void OnCategoryFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingCategories || !Api.IsSignedIn) return;
+        _categoryFilter = (CategoryFilter.SelectedItem as CategoryOption)?.Id;
+        await RefreshItemsAsync();
+    }
+
+    private async void OnLocationFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingLocations || !Api.IsSignedIn) return;
+        _locationFilter = (LocationFilter.SelectedItem as LocationOption)?.Id;
+        await RefreshItemsAsync();
+    }
+
     private async void OnLoadMore(object sender, RoutedEventArgs e)
     {
         if (ActiveSpace is not { } space || _nextCursor is not { } cursor) return;
         var search = _search;
         var state = _stateFilter;
+        var categoryId = _categoryFilter;
+        var locationId = _locationFilter;
         await RunAsync(async () =>
         {
-            var page = await Api.GetItemsPageAsync(space.Id, search, cursor, state: state);
-            if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state) return;
+            var page = await Api.GetItemsPageAsync(space.Id, search, cursor, state: state,
+                categoryId: categoryId, locationId: locationId);
+            if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state ||
+                _categoryFilter != categoryId || _locationFilter != locationId) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
             items.AddRange(page.Items);
             Items.ItemsSource = items;
@@ -63,12 +87,15 @@ public sealed partial class CollectionPage : Page
     private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSpaces) return;
+        _categoryFilter = null;
+        _locationFilter = null;
         await RunAsync(async () =>
         {
             UpdateDestinationOptions();
             TransferHistory.ItemsSource = null;
             await RefreshMembersCoreAsync();
             await RefreshCategoriesCoreAsync();
+            await RefreshLocationsCoreAsync();
             await RefreshItemsCoreAsync();
             await RefreshInvitationsCoreAsync();
         });
@@ -87,7 +114,10 @@ public sealed partial class CollectionPage : Page
         StateAuditHistory.ItemsSource = null;
         AssignedCategories.Text = "Aucune catégorie.";
         EffectiveFields.ItemsSource = null;
+        CurrentLocationText.Text = "Aucun emplacement.";
+        LocationHistory.ItemsSource = null;
         _assignedCategoryCount = 0;
+        _assignedCategoryIds.Clear();
         StateAuditPanel.Visibility = ActiveItem is not null && CanReadStateAudit
             ? Visibility.Visible : Visibility.Collapsed;
         UpdateButtons();
@@ -95,6 +125,7 @@ public sealed partial class CollectionPage : Page
         {
             await RefreshHistoryAsync();
             await RefreshItemTaxonomyAsync();
+            await RefreshItemLocationAsync();
             if (CanReadStateAudit) await RefreshStateAuditAsync();
         }
     }
@@ -352,6 +383,7 @@ public sealed partial class CollectionPage : Page
 
     private async Task LoadSpacesAsync(Guid? selectedId)
     {
+        var previousSpaceId = ActiveSpace?.Id;
         _spaces = Api.CurrentIsSystemAdmin ? await Api.GetAdminSpacesAsync() : await Api.GetSpacesAsync();
         _loadingSpaces = true;
         try
@@ -360,10 +392,16 @@ public sealed partial class CollectionPage : Page
             Spaces.SelectedItem = _spaces.FirstOrDefault(space => space.Id == selectedId) ?? _spaces.FirstOrDefault();
         }
         finally { _loadingSpaces = false; }
+        if (previousSpaceId != ActiveSpace?.Id)
+        {
+            _categoryFilter = null;
+            _locationFilter = null;
+        }
         UpdateDestinationOptions();
         TransferHistory.ItemsSource = null;
         await RefreshMembersCoreAsync();
         await RefreshCategoriesCoreAsync();
+        await RefreshLocationsCoreAsync();
         if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
@@ -381,7 +419,8 @@ public sealed partial class CollectionPage : Page
         _nextCursor = null;
         if (ActiveSpace is { } space && _canReadActiveSpace)
         {
-            var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter);
+            var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter,
+                categoryId: _categoryFilter, locationId: _locationFilter);
             Items.ItemsSource = page.Items;
             _nextCursor = page.NextCursor;
         }
@@ -438,17 +477,81 @@ public sealed partial class CollectionPage : Page
             .OrderBy(option => option.Label, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
+    private static List<LocationOption> LocationOptions(IReadOnlyList<CollectionLocation> locations)
+    {
+        var byId = locations.ToDictionary(location => location.Id);
+        string Label(CollectionLocation location)
+        {
+            var names = new List<string> { location.Name };
+            var seen = new HashSet<Guid> { location.Id };
+            var parent = location.ParentId;
+            while (parent is { } id && seen.Add(id) && byId.TryGetValue(id, out var ancestor))
+            {
+                names.Insert(0, ancestor.Name);
+                parent = ancestor.ParentId;
+            }
+            return string.Join(" / ", names);
+        }
+        return locations.Select(location => new LocationOption(location.Id, Label(location)))
+            .OrderBy(option => option.Label, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
     private async Task RefreshCategoriesCoreAsync()
     {
         _categories = ActiveSpace is { } space && _canReadActiveSpace
             ? await Api.GetCategoriesAsync(space.Id) : [];
         var options = CategoryOptions(_categories);
+        _loadingCategories = true;
+        try
+        {
+            CategoryFilter.ItemsSource = new[] { new CategoryOption(null, "Toutes les catégories") }
+                .Concat(options).ToList();
+            CategoryFilter.SelectedItem = (CategoryFilter.ItemsSource as IEnumerable<CategoryOption>)?
+                .FirstOrDefault(option => option.Id == _categoryFilter);
+        }
+        finally { _loadingCategories = false; }
         ParentCategories.ItemsSource = new[] { new CategoryOption(null, "Aucune — catégorie racine") }
             .Concat(options).ToList();
         ParentCategories.SelectedIndex = 0;
         FieldCategory.ItemsSource = options;
         ItemCategoryChoices.ItemsSource = options;
         CategoryFields.ItemsSource = null;
+    }
+
+    private async Task RefreshLocationsCoreAsync()
+    {
+        _locations = ActiveSpace is { } space && _canReadActiveSpace
+            ? await Api.GetLocationsAsync(space.Id) : [];
+        var options = LocationOptions(_locations);
+        _loadingLocations = true;
+        try
+        {
+            LocationFilter.ItemsSource = new[] { new LocationOption(null, "Tous les emplacements") }
+                .Concat(options).ToList();
+            LocationFilter.SelectedItem = (LocationFilter.ItemsSource as IEnumerable<LocationOption>)?
+                .FirstOrDefault(option => option.Id == _locationFilter);
+        }
+        finally { _loadingLocations = false; }
+        ParentLocations.ItemsSource = new[] { new LocationOption(null, "Aucun — emplacement racine") }
+            .Concat(options).ToList();
+        ParentLocations.SelectedIndex = 0;
+        ItemLocationChoices.ItemsSource = new[] { new LocationOption(null, "Sans emplacement") }
+            .Concat(options).ToList();
+        ItemLocationChoices.SelectedIndex = 0;
+    }
+
+    private async void OnCreateLocation(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewLocationName.Text)) return;
+        var parentId = (ParentLocations.SelectedItem as LocationOption)?.Id;
+        await RunAsync(async () =>
+        {
+            await Api.CreateLocationAsync(space.Id, NewLocationName.Text.Trim(), parentId);
+            NewLocationName.Text = string.Empty;
+            await RefreshLocationsCoreAsync();
+            if (ActiveItem is not null) await RefreshItemLocationCoreAsync();
+            ShowStatus("Emplacement créé.", InfoBarSeverity.Success);
+        });
     }
 
     private async void OnCreateCategory(object sender, RoutedEventArgs e)
@@ -493,25 +596,71 @@ public sealed partial class CollectionPage : Page
         var fields = await Api.GetItemFieldsAsync(item.Id);
         if (ActiveItem?.Id != item.Id) return;
         _assignedCategoryCount = categories.Categories.Count;
+        _assignedCategoryIds = categories.Categories.Select(category => category.CategoryId).ToHashSet();
         AssignedCategories.Text = _assignedCategoryCount == 0 ? "Aucune catégorie." :
             "Catégories : " + string.Join(", ", categories.Categories.Select(category => category.CategoryName));
         EffectiveFields.ItemsSource = fields.Fields;
         ItemCategoryChoices.SelectedItems.Clear();
+        foreach (var option in (ItemCategoryChoices.ItemsSource as IEnumerable<CategoryOption>) ?? [])
+            if (option.Id is { } id && _assignedCategoryIds.Contains(id))
+                ItemCategoryChoices.SelectedItems.Add(option);
     }
 
-    private async void OnAddItemCategories(object sender, RoutedEventArgs e)
+    private Task RefreshItemLocationAsync() => RunAsync(RefreshItemLocationCoreAsync);
+
+    private async Task RefreshItemLocationCoreAsync()
+    {
+        if (ActiveItem is not { } item) return;
+        var current = await Api.GetItemLocationAsync(item.Id);
+        var events = await Api.GetItemLocationEventsAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        var choice = (ItemLocationChoices.ItemsSource as IEnumerable<LocationOption>)?
+            .FirstOrDefault(option => option.Id == current.Location?.Id);
+        ItemLocationChoices.SelectedItem = choice;
+        CurrentLocationText.Text = current.Location is null ? "Aucun emplacement." :
+            "Emplacement : " + (choice?.Label ?? current.Location.Name);
+        LocationHistory.ItemsSource = events;
+    }
+
+    private async void OnMoveItemLocation(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item || ItemLocationChoices.SelectedItem is not LocationOption choice) return;
+        await RunAsync(async () =>
+        {
+            await Api.MoveItemLocationAsync(item.Id, choice.Id, item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == item.Id);
+            ShowStatus("Emplacement enregistré.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnSaveItemCategories(object sender, RoutedEventArgs e)
     {
         if (ActiveItem is not { } item) return;
         var ids = ItemCategoryChoices.SelectedItems.Cast<CategoryOption>()
             .Where(option => option.Id.HasValue).Select(option => option.Id!.Value).ToList();
-        if (ids.Count == 0) { ShowStatus("Choisissez une catégorie.", InfoBarSeverity.Warning); return; }
+        var removing = _assignedCategoryIds.Except(ids).Any();
+        if (removing)
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "Modifier le classement ?",
+                Content = "Les catégories retirées ne seront plus affichées. Les valeurs des champs qui restent applicables seront conservées ; les autres resteront dans l'historique, sans suppression définitive.",
+                PrimaryButtonText = "Enregistrer",
+                CloseButtonText = "Annuler",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        }
         await RunAsync(async () =>
         {
-            await Api.AddItemCategoriesAsync(item.Id, ids, item.Revision);
+            await Api.ReplaceItemCategoriesAsync(item.Id, ids, item.Revision);
             await RefreshItemsCoreAsync();
             Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
                 .FirstOrDefault(candidate => candidate.Id == item.Id);
-            ShowStatus("Catégories ajoutées.", InfoBarSeverity.Success);
+            ShowStatus("Classement enregistré.", InfoBarSeverity.Success);
         });
     }
 
@@ -575,8 +724,10 @@ public sealed partial class CollectionPage : Page
         RefreshMembersButton.IsEnabled = false;
         CreateCategoryButton.IsEnabled = false;
         CreateFieldButton.IsEnabled = false;
-        AddItemCategoriesButton.IsEnabled = false;
+        SaveItemCategoriesButton.IsEnabled = false;
         SaveFieldValueButton.IsEnabled = false;
+        CreateLocationButton.IsEnabled = false;
+        MoveItemLocationButton.IsEnabled = false;
         try { await action(); }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
@@ -611,8 +762,10 @@ public sealed partial class CollectionPage : Page
             (Members.SelectedItem as SpaceMember)?.AccountId != ActiveSpace?.OwnerAccountId;
         CreateCategoryButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
         CreateFieldButton.IsEnabled = CreateCategoryButton.IsEnabled && FieldCategory.SelectedItem is CategoryOption { Id: not null };
-        AddItemCategoriesButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        SaveItemCategoriesButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
         SaveFieldValueButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && EffectiveFields.SelectedItem is not null;
+        CreateLocationButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
+        MoveItemLocationButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ItemLocationChoices.SelectedItem is LocationOption;
     }
 
     private void ShowStatus(string message, InfoBarSeverity severity)

@@ -373,6 +373,104 @@ impl Database {
         Ok(revision + u64::from(added))
     }
 
+    /// Replaces all active classifications in the current space. Values for fields still
+    /// reachable through the new selection are copied to an active assignment when needed;
+    /// values for fields no longer reachable remain on ended assignments as history.
+    /// An empty selection intentionally removes every category.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, missing item/category, stale revision, trash, or query error.
+    pub async fn replace_item_categories(
+        &self,
+        item_id: Uuid,
+        expected_revision: u64,
+        category_ids: &[Uuid],
+    ) -> Result<u64, TaxonomyError> {
+        let selected: BTreeSet<Uuid> = category_ids.iter().copied().collect();
+        if selected.len() > 20 {
+            return Err(TaxonomyError::TooManyCategories);
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT space_id, state, revision FROM inventory_items WHERE id = ? FOR UPDATE",
+        )
+        .bind(item_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(TaxonomyError::ItemNotFound)?;
+        let space_id = decode_uuid(&row, "space_id")?;
+        let state: Vec<u8> = row.try_get("state")?;
+        if state == b"trashed" {
+            return Err(TaxonomyError::ItemInTrash);
+        }
+        let revision: u64 = row.try_get("revision")?;
+        if revision != expected_revision {
+            return Err(TaxonomyError::RevisionConflict);
+        }
+
+        // Check every target before ending any existing assignment.
+        for category_id in &selected {
+            let belongs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM inventory_categories WHERE id = ? AND space_id = ?",
+            )
+            .bind(category_id.to_string())
+            .bind(space_id.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+            if belongs == 0 {
+                return Err(TaxonomyError::InvalidCategory);
+            }
+        }
+        let rows = sqlx::query(
+            "SELECT id, category_id FROM item_category_assignments \
+             WHERE item_id = ? AND space_id = ? AND ended_at IS NULL",
+        )
+        .bind(item_id.to_string())
+        .bind(space_id.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        let existing: BTreeSet<Uuid> = rows
+            .iter()
+            .map(|row| decode_uuid(row, "category_id"))
+            .collect::<Result<_, _>>()?;
+        if existing == selected {
+            tx.commit().await?;
+            return Ok(revision);
+        }
+        let prior_fields = load_effective_fields(&mut *tx, item_id, space_id).await?;
+        for row in &rows {
+            let category_id = decode_uuid(row, "category_id")?;
+            if !selected.contains(&category_id) {
+                let assignment_id = decode_uuid(row, "id")?;
+                sqlx::query("UPDATE item_category_assignments SET ended_at = ? WHERE id = ?")
+                    .bind(Utc::now())
+                    .bind(assignment_id.to_string())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        for category_id in selected.difference(&existing) {
+            sqlx::query(
+                "INSERT INTO item_category_assignments (id, item_id, category_id, space_id) \
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(Uuid::now_v7().to_string())
+            .bind(item_id.to_string())
+            .bind(category_id.to_string())
+            .bind(space_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        preserve_reachable_values(&mut tx, item_id, space_id, &prior_fields).await?;
+        sqlx::query("UPDATE inventory_items SET revision = revision + 1 WHERE id = ?")
+            .bind(item_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(revision + 1)
+    }
+
     /// Lists an item's current categories in a single space.
     ///
     /// # Errors
@@ -485,6 +583,35 @@ impl Database {
         tx.commit().await?;
         Ok(revision + 1)
     }
+}
+
+async fn preserve_reachable_values(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    item_id: Uuid,
+    space_id: Uuid,
+    prior_fields: &[EffectiveField],
+) -> Result<(), TaxonomyError> {
+    let current_fields = load_effective_fields(&mut **tx, item_id, space_id).await?;
+    for field in prior_fields.iter().filter(|field| field.value.is_some()) {
+        let Some(target) = current_fields.iter().find(|target| target.id == field.id) else {
+            continue;
+        };
+        if target.value.is_some() || target.assignment_id == field.assignment_id {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO item_custom_field_values \
+                (assignment_id, field_id, value_text, value_number, value_date) \
+             SELECT ?, field_id, value_text, value_number, value_date \
+             FROM item_custom_field_values WHERE assignment_id = ? AND field_id = ?",
+        )
+        .bind(target.assignment_id.to_string())
+        .bind(field.assignment_id.to_string())
+        .bind(field.id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn load_effective_fields<'e, E>(

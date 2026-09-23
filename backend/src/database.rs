@@ -135,6 +135,12 @@ pub struct ItemTransfer {
     pub transferred_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ItemSearchFilters {
+    pub category_id: Option<Uuid>,
+    pub location_id: Option<Uuid>,
+}
+
 /// An audited lifecycle change made while the item belonged to a space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemStateEvent {
@@ -883,7 +889,7 @@ impl Database {
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
 
         let row = sqlx::query(
-            "SELECT space_id, inventory_number, state, revision \
+            "SELECT space_id, inventory_number, current_location_id, state, revision \
              FROM inventory_items WHERE id = ? FOR UPDATE",
         )
         .bind(item_id.to_string())
@@ -935,6 +941,16 @@ impl Database {
         )
         .await?;
 
+        crate::locations::record_transfer_location_exit(
+            &mut transaction,
+            item_id,
+            source_space_id,
+            row.try_get("current_location_id")
+                .map_err(DatabaseError::Query)?,
+            actor_account_id,
+        )
+        .await?;
+
         sqlx::query(
             "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",
         )
@@ -945,7 +961,7 @@ impl Database {
 
         sqlx::query(
             "UPDATE inventory_items \
-             SET space_id = ?, inventory_number = ?, revision = revision + 1 \
+             SET space_id = ?, inventory_number = ?, current_location_id = NULL, revision = revision + 1 \
              WHERE id = ?",
         )
         .bind(destination_space_id.to_string())
@@ -1158,7 +1174,8 @@ impl Database {
     }
 
     /// Returns at most `limit` items after an inventory number, optionally matching a name and
-    /// restricted to one lifecycle state. `state` is a validated code or `all`.
+    /// restricted to one lifecycle state, category subtree and physical-location subtree.
+    /// `state` is a validated code or `all`.
     /// The caller requests one extra row to determine whether another page exists.
     ///
     /// # Errors
@@ -1171,21 +1188,48 @@ impl Database {
         after_inventory_number: u64,
         state: &str,
         limit: u32,
+        filters: ItemSearchFilters,
     ) -> Result<Vec<Item>, DatabaseError> {
         let rows = sqlx::query(
-            "SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
+            "WITH RECURSIVE category_tree AS ( \
+                 SELECT id FROM inventory_categories WHERE id = ? AND space_id = ? \
+                 UNION ALL \
+                 SELECT c.id FROM inventory_categories c \
+                 JOIN category_tree parent ON c.parent_id = parent.id WHERE c.space_id = ? \
+             ), location_tree AS ( \
+                 SELECT id FROM inventory_locations WHERE id = ? AND space_id = ? \
+                 UNION ALL \
+                 SELECT l.id FROM inventory_locations l \
+                 JOIN location_tree parent ON l.parent_id = parent.id WHERE l.space_id = ? \
+             ) \
+             SELECT id, space_id, inventory_number, name, state, revision, created_by_account_id, created_at \
              FROM inventory_items \
              WHERE space_id = ? AND inventory_number > ? \
                AND (? = '' OR LOCATE(?, name) > 0) \
                AND (? = 'all' OR state = ?) \
+               AND (? IS NULL OR EXISTS ( \
+                   SELECT 1 FROM item_category_assignments a \
+                   JOIN category_tree t ON t.id = a.category_id \
+                   WHERE a.item_id = inventory_items.id AND a.space_id = ? AND a.ended_at IS NULL \
+               )) \
+               AND (? IS NULL OR current_location_id IN (SELECT id FROM location_tree)) \
              ORDER BY inventory_number LIMIT ?",
         )
+        .bind(filters.category_id.map(|id| id.to_string()))
+        .bind(space_id.to_string())
+        .bind(space_id.to_string())
+        .bind(filters.location_id.map(|id| id.to_string()))
+        .bind(space_id.to_string())
+        .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(after_inventory_number)
         .bind(search)
         .bind(search)
         .bind(state)
         .bind(state)
+        .bind(filters.category_id.map(|id| id.to_string()))
+        .bind(space_id.to_string())
+        .bind(filters.location_id.map(|id| id.to_string()))
         .bind(limit)
         .fetch_all(&self.pool)
         .await

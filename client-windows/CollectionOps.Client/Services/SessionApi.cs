@@ -138,6 +138,17 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<CategoryFieldDefinition>(HttpMethod.Post,
             $"api/v1/spaces/{spaceId}/categories/{categoryId}/fields", new { name, value_type = valueType });
 
+    public async Task<IReadOnlyList<CollectionLocation>> GetLocationsAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<LocationListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/locations");
+        return result.Locations;
+    }
+
+    public Task<CollectionLocation> CreateLocationAsync(Guid spaceId, string name, Guid? parentId) =>
+        SendJsonAsync<CollectionLocation>(HttpMethod.Post,
+            $"api/v1/spaces/{spaceId}/locations", new { name, parent_id = parentId });
+
     public async Task<IReadOnlyList<SpaceInvitation>> GetInvitationsAsync(Guid spaceId)
     {
         var result = await SendJsonAsync<InvitationListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/invitations");
@@ -196,13 +207,15 @@ public sealed class SessionApi : IDisposable
         await EnsureSuccessAsync(response);
     }
 
-    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50, string? state = null)
+    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50, string? state = null, Guid? categoryId = null, Guid? locationId = null)
     {
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
         var parameters = new List<string> { $"limit={limit}" };
         if (!string.IsNullOrWhiteSpace(search)) parameters.Add($"q={Uri.EscapeDataString(search.Trim())}");
         if (!string.IsNullOrEmpty(after)) parameters.Add($"after={Uri.EscapeDataString(after)}");
         if (!string.IsNullOrWhiteSpace(state)) parameters.Add($"state={Uri.EscapeDataString(state)}");
+        if (categoryId is { } id) parameters.Add($"category_id={id}");
+        if (locationId is { } location) parameters.Add($"location_id={location}");
         return SendJsonAsync<ItemPageResponse>(HttpMethod.Get,
             $"api/v1/spaces/{spaceId}/items?{string.Join("&", parameters)}");
     }
@@ -236,12 +249,30 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<ItemCategoryListResponse>(HttpMethod.Post, $"api/v1/items/{itemId}/categories",
             new { category_ids = categoryIds, expected_revision = expectedRevision });
 
+    public Task<ItemCategoryListResponse> ReplaceItemCategoriesAsync(Guid itemId, IReadOnlyList<Guid> categoryIds, string expectedRevision) =>
+        SendJsonAsync<ItemCategoryListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/categories",
+            new { category_ids = categoryIds, expected_revision = expectedRevision });
+
     public Task<EffectiveFieldListResponse> GetItemFieldsAsync(Guid itemId) =>
         SendJsonAsync<EffectiveFieldListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/fields");
 
     public Task<EffectiveFieldListResponse> SetItemFieldValueAsync(Guid itemId, Guid fieldId, string value, string expectedRevision) =>
         SendJsonAsync<EffectiveFieldListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/fields/{fieldId}",
             new { value, expected_revision = expectedRevision });
+
+    public Task<ItemLocationResponse> GetItemLocationAsync(Guid itemId) =>
+        SendJsonAsync<ItemLocationResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/location");
+
+    public Task<ItemLocationResponse> MoveItemLocationAsync(Guid itemId, Guid? locationId, string expectedRevision) =>
+        SendJsonAsync<ItemLocationResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/location",
+            new { location_id = locationId, expected_revision = expectedRevision });
+
+    public async Task<IReadOnlyList<ItemLocationEvent>> GetItemLocationEventsAsync(Guid itemId)
+    {
+        var result = await SendJsonAsync<ItemLocationEventListResponse>(HttpMethod.Get,
+            $"api/v1/items/{itemId}/location-events");
+        return result.Events;
+    }
 
     public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision,
         IReadOnlyList<Guid>? destinationCategoryIds = null) =>
@@ -438,6 +469,31 @@ public sealed record CategoryFieldDefinition(
 }
 public sealed record CategoryFieldListResponse(
     [property: JsonPropertyName("fields")] List<CategoryFieldDefinition> Fields);
+public sealed record CollectionLocation(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("parent_id")] Guid? ParentId,
+    [property: JsonPropertyName("name")] string Name);
+public sealed record LocationListResponse(
+    [property: JsonPropertyName("locations")] List<CollectionLocation> Locations);
+public sealed record LocationOption(Guid? Id, string Label);
+public sealed record ItemLocationResponse(
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("location")] CollectionLocation? Location);
+public sealed record ItemLocationEvent(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("from_location_id")] Guid? FromLocationId,
+    [property: JsonPropertyName("from_location_name")] string? FromLocationName,
+    [property: JsonPropertyName("to_location_id")] Guid? ToLocationId,
+    [property: JsonPropertyName("to_location_name")] string? ToLocationName,
+    [property: JsonPropertyName("actor_display_name")] string ActorDisplayName,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+{
+    public string Description => $"{ActorDisplayName} : {FromLocationName ?? "Sans emplacement"} → {ToLocationName ?? "Sans emplacement"}";
+    public string Date => CreatedAt.ToLocalTime().ToString("g");
+}
+public sealed record ItemLocationEventListResponse(
+    [property: JsonPropertyName("events")] List<ItemLocationEvent> Events);
 public sealed record ItemCategoryAssignment(
     [property: JsonPropertyName("category_id")] Guid CategoryId,
     [property: JsonPropertyName("category_name")] string CategoryName);

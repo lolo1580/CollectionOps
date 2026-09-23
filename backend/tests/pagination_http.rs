@@ -91,6 +91,100 @@ async fn inventory_pages_are_bounded_and_search_treats_wildcards_literally() {
     assert_eq!(literal["items"].as_array().unwrap().len(), 1);
     assert_eq!(literal["items"][0]["name"], "100% Casque");
 
+    let root = database
+        .create_category(space.id, None, "Militaire")
+        .await
+        .unwrap();
+    let child = database
+        .create_category(space.id, Some(root.id), "Casques")
+        .await
+        .unwrap();
+    let items = database.items_in_space(space.id).await.unwrap();
+    database
+        .add_item_categories(items[2].id, 1, &[child.id])
+        .await
+        .unwrap();
+    database
+        .add_item_categories(items[3].id, 1, &[child.id])
+        .await
+        .unwrap();
+    let filtered = payload(
+        get(format!("{path}?category_id={}&limit=1", root.id))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["items"][0]["name"], "100% Casque");
+    assert_eq!(filtered["next_cursor"], "3");
+    let next = payload(
+        get(format!("{path}?category_id={}&limit=1&after=3", root.id))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(next["items"][0]["name"], "casque");
+    assert!(next["next_cursor"].is_null());
+    let storage_room = database
+        .create_location(space.id, None, "Réserve")
+        .await
+        .unwrap();
+    let shelf = database
+        .create_location(space.id, Some(storage_room.id), "Étagère")
+        .await
+        .unwrap();
+    database
+        .move_item_to_location(items[2].id, Some(shelf.id), 2, account_id)
+        .await
+        .unwrap();
+    let by_room = payload(
+        get(format!("{path}?location_id={}", storage_room.id))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(by_room["items"].as_array().unwrap().len(), 1);
+    assert_eq!(by_room["items"][0]["name"], "100% Casque");
+    let combined = payload(
+        get(format!(
+            "{path}?location_id={}&category_id={}&q=Casque",
+            storage_room.id, root.id
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(combined["items"].as_array().unwrap().len(), 1);
+    assert_eq!(combined["items"][0]["name"], "100% Casque");
+    assert_eq!(
+        get(format!("{path}?location_id={}", Uuid::now_v7()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(format!("{path}?location_id=invalid"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        get(format!("{path}?category_id={}", Uuid::now_v7()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(format!("{path}?category_id=invalid"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     for suffix in ["?limit=0", "?limit=101", "?after=not-a-number"] {
         assert_eq!(
             get(format!("{path}{suffix}")).await.unwrap().status(),

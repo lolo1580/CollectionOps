@@ -16,6 +16,7 @@ pub async fn clear_all(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     for statement in [
         "DELETE FROM item_custom_field_values",
         "DELETE FROM item_category_assignments",
+        "DELETE FROM item_location_events",
         "DELETE FROM category_field_definitions",
         "DELETE FROM space_member_audit_events",
         "DELETE FROM space_audit_events",
@@ -34,6 +35,22 @@ pub async fn clear_all(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
         let deleted = sqlx::query(
             "DELETE c FROM inventory_categories c \
              LEFT JOIN inventory_categories child ON child.space_id = c.space_id AND child.parent_id = c.id \
+             WHERE child.id IS NULL",
+        )
+        .execute(pool)
+        .await?
+        .rows_affected();
+        if deleted == 0 {
+            break;
+        }
+    }
+
+    // Items have been removed above, so no active location can still reference the tree.
+    loop {
+        let deleted = sqlx::query(
+            "DELETE location FROM inventory_locations location \
+             LEFT JOIN inventory_locations child \
+               ON child.space_id = location.space_id AND child.parent_id = location.id \
              WHERE child.id IS NULL",
         )
         .execute(pool)

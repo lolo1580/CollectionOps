@@ -509,3 +509,180 @@ async fn nested_categories_and_fields_stay_inside_their_space() {
         "old category values remain as history after transfer"
     );
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn replacing_categories_preserves_shared_values_and_ends_removed_assignments() {
+    let Ok(url) = std::env::var("COLLECTIONOPS_TEST_DATABASE_URL") else {
+        return;
+    };
+    let db = Database::connect_and_migrate(&url).await.unwrap();
+    collectionops_backend::testing::clear_all(db.pool())
+        .await
+        .unwrap();
+    let admin = BootstrapAdmin::from_parts("owner@example.com", "Owner", PASSWORD).unwrap();
+    db.provision_bootstrap_admin(&admin, &PasswordService::default())
+        .await
+        .unwrap();
+    let owner_raw: Vec<u8> = sqlx::query_scalar("SELECT id FROM accounts WHERE email = ?")
+        .bind("owner@example.com")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    let owner_id = Uuid::parse_str(std::str::from_utf8(&owner_raw).unwrap()).unwrap();
+    let reader_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO accounts (id, display_name, email, password_hash) SELECT ?, 'Reader', 'reader@example.com', password_hash FROM accounts WHERE email = ?")
+        .bind(reader_id.to_string()).bind("owner@example.com").execute(db.pool()).await.unwrap();
+    let space = db.create_space("Collection", owner_id).await.unwrap();
+    let other = db.create_space("Autre", owner_id).await.unwrap();
+    db.add_member(space.id, reader_id, &[Permission::CollectionsRead])
+        .await
+        .unwrap();
+    let root = db.create_category(space.id, None, "Armes").await.unwrap();
+    let old = db
+        .create_category(space.id, Some(root.id), "Casques")
+        .await
+        .unwrap();
+    let new = db
+        .create_category(space.id, Some(root.id), "Uniformes")
+        .await
+        .unwrap();
+    let foreign = db.create_category(other.id, None, "Autre").await.unwrap();
+    let shared_field = db
+        .create_category_field(
+            space.id,
+            root.id,
+            "Fabricant",
+            collectionops_backend::FieldType::Text,
+        )
+        .await
+        .unwrap();
+    let old_field = db
+        .create_category_field(
+            space.id,
+            old.id,
+            "Taille",
+            collectionops_backend::FieldType::Number,
+        )
+        .await
+        .unwrap();
+    let item = db.create_item(space.id, "Objet", owner_id).await.unwrap();
+    assert_eq!(
+        db.add_item_categories(item.id, 1, &[old.id]).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        db.set_item_field_value(item.id, shared_field.id, 2, "US")
+            .await
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        db.set_item_field_value(item.id, old_field.id, 3, "12.5")
+            .await
+            .unwrap(),
+        4
+    );
+    let router = collectionops_backend::app_with_database(db.clone());
+    let owner_token = login(&router, "owner@example.com").await;
+    let reader_token = login(&router, "reader@example.com").await;
+    let path = format!("/api/v1/items/{}/categories", item.id);
+
+    assert_eq!(
+        send(
+            &router,
+            Method::PUT,
+            &path,
+            Some(&reader_token),
+            Some(json!({"category_ids":[new.id], "expected_revision":"4"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PUT,
+            &path,
+            Some(&owner_token),
+            Some(json!({"category_ids":[foreign.id], "expected_revision":"4"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PUT,
+            &path,
+            Some(&owner_token),
+            Some(json!({"category_ids":[new.id], "expected_revision":"3"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let replaced = send(
+        &router,
+        Method::PUT,
+        &path,
+        Some(&owner_token),
+        Some(json!({"category_ids":[new.id], "expected_revision":"4"})),
+    )
+    .await;
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let replaced = body_json(replaced).await;
+    assert_eq!(replaced["revision"], "5");
+    assert_eq!(replaced["categories"][0]["category_id"], new.id.to_string());
+    let fields = db.effective_item_fields(item.id, space.id).await.unwrap();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].id, shared_field.id);
+    assert_eq!(fields[0].value.as_deref(), Some("US"));
+    let ended: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM item_category_assignments WHERE item_id = ? AND ended_at IS NOT NULL",
+    )
+    .bind(item.id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(ended, 1);
+    let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item_custom_field_values")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(retained, 3, "old values remain and shared value is copied");
+
+    let no_op = body_json(
+        send(
+            &router,
+            Method::PUT,
+            &path,
+            Some(&owner_token),
+            Some(json!({"category_ids":[new.id], "expected_revision":"5"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_op["revision"], "5");
+    let emptied = body_json(
+        send(
+            &router,
+            Method::PUT,
+            &path,
+            Some(&owner_token),
+            Some(json!({"category_ids":[], "expected_revision":"5"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(emptied["revision"], "6");
+    assert_eq!(emptied["categories"].as_array().unwrap().len(), 0);
+    assert!(
+        db.effective_item_fields(item.id, space.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

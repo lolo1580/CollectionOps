@@ -4,7 +4,9 @@
 //! `COLLECTIONOPS_TEST_DATABASE_URL` is set. Each test takes a process-wide lock because the
 //! suite shares one database and `sqlx::migrate!` is not concurrency-safe.
 
-use collectionops_backend::{BootstrapAdmin, Database, InventoryError, ItemState, PasswordService};
+use collectionops_backend::{
+    BootstrapAdmin, Database, InventoryError, ItemSearchFilters, ItemState, PasswordService,
+};
 use sqlx::Row;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
@@ -758,7 +760,14 @@ async fn the_state_filter_hides_archived_and_trashed_items() {
 
     let visible = fixture
         .database
-        .search_items_in_space(fixture.space_a, "", 0, "active", 50)
+        .search_items_in_space(
+            fixture.space_a,
+            "",
+            0,
+            "active",
+            50,
+            ItemSearchFilters::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -769,14 +778,28 @@ async fn the_state_filter_hides_archived_and_trashed_items() {
 
     let all = fixture
         .database
-        .search_items_in_space(fixture.space_a, "", 0, "all", 50)
+        .search_items_in_space(
+            fixture.space_a,
+            "",
+            0,
+            "all",
+            50,
+            ItemSearchFilters::default(),
+        )
         .await
         .unwrap();
     assert_eq!(all.len(), 3);
 
     let archived_only = fixture
         .database
-        .search_items_in_space(fixture.space_a, "", 0, "archived", 50)
+        .search_items_in_space(
+            fixture.space_a,
+            "",
+            0,
+            "archived",
+            50,
+            ItemSearchFilters::default(),
+        )
         .await
         .unwrap();
     assert_eq!(

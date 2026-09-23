@@ -12,6 +12,11 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Emplacements physiques hiérarchiques par espace, position courante unique par objet et journal des déplacements, reliés à l'API et au client Windows.
+- Sortie d'emplacement enregistrée lors d'un transfert entre espaces, sans révéler l'historique source dans la destination.
+- Filtres d'inventaire par catégorie ou emplacement et leurs descendants, compatibles avec la recherche, les états et la pagination ; tests MariaDB/HTTP et contrat client.
+- Remplacement ou retrait du classement d'un objet dans l'API et le client Windows, avec conservation des champs encore applicables et des anciennes valeurs en historique.
+- Test MariaDB/HTTP des droits, révisions, catégories d'un autre espace, suppression complète du classement et préservation des valeurs héritées ; vérification du contrat client Windows.
 - Catégories imbriquées par espace, classement multiple des objets et champs personnalisés texte, nombre ou date hérités des catégories parentes, avec API, migration MariaDB et interface Windows.
 - Transfert d'un objet classé avec choix explicite des catégories de destination ; l'ancien classement et ses valeurs restent historiques et ne sont pas copiés vers le nouvel espace.
 - Tests HTTP/MariaDB du classement, de l'héritage, des droits et du transfert, ainsi que trois vérifications du contrat client Windows.

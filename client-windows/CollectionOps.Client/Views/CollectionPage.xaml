@@ -38,6 +38,14 @@
             </StackPanel>
             <ListView x:Name="CategoryFields" SelectionMode="None" Height="100" DisplayMemberPath="Label" />
 
+            <TextBlock Text="Emplacements physiques" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Organisez les pièces, meubles et étagères dans une hiérarchie propre à cet espace." TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="NewLocationName" PlaceholderText="Nom de l'emplacement" Width="250" />
+                <ComboBox x:Name="ParentLocations" Header="Parent" Width="270" DisplayMemberPath="Label" />
+                <Button x:Name="CreateLocationButton" Content="Créer" Click="OnCreateLocation" VerticalAlignment="Bottom" />
+            </StackPanel>
+
             <StackPanel x:Name="SharingPanel" Spacing="8" Visibility="Collapsed">
                 <TextBlock Text="Partager cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <TextBlock Text="Seul le propriétaire peut inviter. La lecture de la collection est présélectionnée ; aucun droit financier n'est accordé par défaut. Un nouvel envoi à la même adresse invalide le précédent lien." TextWrapping="Wrap" />
@@ -105,12 +113,18 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="SearchText" PlaceholderText="Rechercher dans le nom" Width="280" />
                 <Button x:Name="SearchButton" Content="Rechercher" Click="OnSearch" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
                 <ComboBox x:Name="StateFilter" Header="État" Width="180" SelectionChanged="OnStateFilterChanged">
                     <ComboBoxItem Content="Actifs" Tag="active" IsSelected="True" />
                     <ComboBoxItem Content="Archivés" Tag="archived" />
                     <ComboBoxItem Content="Corbeille" Tag="trashed" />
                     <ComboBoxItem Content="Tous" Tag="all" />
                 </ComboBox>
+                <ComboBox x:Name="CategoryFilter" Header="Catégorie" Width="260"
+                          DisplayMemberPath="Label" SelectionChanged="OnCategoryFilterChanged" />
+                <ComboBox x:Name="LocationFilter" Header="Emplacement" Width="260"
+                          DisplayMemberPath="Label" SelectionChanged="OnLocationFilterChanged" />
             </StackPanel>
             <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
@@ -139,14 +153,30 @@
             </StackPanel>
             <TextBlock Text="Classement et champs de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="AssignedCategories" Text="Aucune catégorie." TextWrapping="Wrap" />
-            <TextBlock Text="Choisissez une ou plusieurs catégories à ajouter à cet objet (ajout uniquement pour l'instant)." TextWrapping="Wrap" />
+            <TextBlock Text="Cochez les catégories à conserver ou à ajouter. Les valeurs des champs encore applicables sont préservées ; les autres restent seulement dans l'historique." TextWrapping="Wrap" />
             <ListView x:Name="ItemCategoryChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
-            <Button x:Name="AddItemCategoriesButton" Content="Ajouter les catégories choisies" Click="OnAddItemCategories" HorizontalAlignment="Left" />
+            <Button x:Name="SaveItemCategoriesButton" Content="Enregistrer le classement" Click="OnSaveItemCategories" HorizontalAlignment="Left" />
             <ListView x:Name="EffectiveFields" Height="140" DisplayMemberPath="Label" SelectionChanged="OnEffectiveFieldSelected" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="FieldValue" Header="Valeur du champ sélectionné" Width="350" />
                 <Button x:Name="SaveFieldValueButton" Content="Enregistrer" Click="OnSaveFieldValue" VerticalAlignment="Bottom" />
             </StackPanel>
+            <TextBlock Text="Emplacement courant et déplacements" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock x:Name="CurrentLocationText" Text="Aucun emplacement." TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="ItemLocationChoices" Header="Déplacer vers" Width="400" DisplayMemberPath="Label" />
+                <Button x:Name="MoveItemLocationButton" Content="Enregistrer l'emplacement" Click="OnMoveItemLocation" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <ListView x:Name="LocationHistory" SelectionMode="None">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="services:ItemLocationEvent">
+                        <StackPanel Margin="0,6,0,6" Spacing="4">
+                            <TextBlock Text="{x:Bind Description}" TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind Date}" Opacity="0.7" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
             <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" SelectionChanged="OnDestinationSelected" />
