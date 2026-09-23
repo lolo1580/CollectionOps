@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, liste/création/lecture d'objets sont exposées ; les transferts restent au stade du contrat.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire et transferts d'objets sont exposées ; pagination et synchronisation restent à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -44,7 +44,7 @@ Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou d
 {"destination_space_id":"0189a4c2-7f00-7000-8000-000000000003","expected_revision":"1"}
 ```
 
-Le backend verrouille l'objet, vérifie sa révision, son espace courant et les droits, réserve le prochain numéro de destination, augmente la révision, puis inscrit l'historique du transfert dans la même transaction. Une destination identique à la source reçoit `422`. Une révision obsolète reçoit `409` et n'est jamais silencieusement remplacée. La réponse `200` contient l'objet mis à jour et le transfert :
+Le backend vérifie d'abord les droits dans les deux espaces. La transaction verrouille ensuite l'objet, vérifie sa révision et son espace courant, réserve le prochain numéro de destination, augmente la révision, puis inscrit l'historique du transfert. Une destination identique à la source reçoit `422`. Une révision obsolète reçoit `409` et n'est jamais silencieusement remplacée. La réponse `200` contient l'objet mis à jour et le transfert :
 
 ```json
 {
@@ -52,6 +52,8 @@ Le backend verrouille l'objet, vérifie sa révision, son espace courant et les 
   "transfer": {"id":"0189a4c2-7f00-7000-8000-000000000004","source_space_id":"0189a4c2-7f00-7000-8000-000000000002","source_inventory_number":"1","destination_space_id":"0189a4c2-7f00-7000-8000-000000000003","destination_inventory_number":"1"}
 }
 ```
+
+`GET /api/v1/items/{item_id}/transfers` retourne `{"transfers":[...]}` du plus récent au plus ancien. La lecture exige `collections_read` dans l'espace courant **et dans tous les espaces cités par l'historique** ; sinon la réponse est `404` pour ne pas révéler les anciens espaces. La réponse ne contient pas les droits, les données financières ni les jetons de session.
 
 ## Hors de cette première tranche
 

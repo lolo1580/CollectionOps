@@ -7,7 +7,9 @@ await RejectUnexpectedHealth();
 await ClearExpiredSession();
 await RejectMalformedJson();
 await ReadCollectionWithSession();
-Console.WriteLine("SessionApi: 5 checks passed.");
+await TransferUsesExpectedRevision();
+await ReadTransferHistory();
+Console.WriteLine("SessionApi: 7 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -62,6 +64,37 @@ static async Task ReadCollectionWithSession()
     Assert(handler.LastToken == "secret", "Collection calls must carry the session token.");
 }
 
+static async Task TransferUsesExpectedRevision()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"item":{"id":"01900000-0000-7000-8000-000000000001","space_id":"01900000-0000-7000-8000-000000000002","inventory_number":"2","name":"Objet","revision":"2"},"transfer":{"id":"01900000-0000-7000-8000-000000000003","source_space_id":"01900000-0000-7000-8000-000000000004","destination_space_id":"01900000-0000-7000-8000-000000000002","source_inventory_number":"1","destination_inventory_number":"2","transferred_at":"2026-09-23T10:00:00Z"}}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var itemId = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var destinationId = Guid.Parse("01900000-0000-7000-8000-000000000002");
+    var outcome = await api.TransferItemAsync(itemId, destinationId, "1");
+    Assert(outcome.Item.Revision == "2" && outcome.Transfer.DestinationInventoryNumber == "2", "Transfer response must parse.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/transfers", "Transfer route must target the selected item.");
+    Assert(handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true, "Transfer must send the displayed revision.");
+    Assert(handler.LastToken == "secret", "Transfer must carry the session token.");
+}
+
+static async Task ReadTransferHistory()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"transfers":[{"id":"01900000-0000-7000-8000-000000000003","source_space_id":"01900000-0000-7000-8000-000000000004","destination_space_id":"01900000-0000-7000-8000-000000000002","source_inventory_number":"1","destination_inventory_number":"2","transferred_at":"2026-09-23T10:00:00Z"}]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var itemId = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var history = await api.GetItemTransfersAsync(itemId);
+    Assert(history.Count == 1 && history[0].SourceInventoryNumber == "1", "History must parse transfer numbers.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/transfers", "History route must target the selected item.");
+}
+
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
@@ -85,17 +118,21 @@ sealed class FakeHandler : HttpMessageHandler
 {
     private readonly Queue<HttpResponseMessage> _responses = new();
     public string? LastToken { get; private set; }
+    public string? LastPath { get; private set; }
+    public string? LastBody { get; private set; }
 
     public void Enqueue(HttpStatusCode status, string body) => _responses.Enqueue(new HttpResponseMessage(status)
     {
         Content = new StringContent(body, Encoding.UTF8, "application/json"),
     });
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         LastToken = request.Headers.TryGetValues("x-session-token", out var values)
             ? values.Single()
             : null;
-        return Task.FromResult(_responses.Dequeue());
+        LastPath = request.RequestUri?.AbsolutePath;
+        LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        return _responses.Dequeue();
     }
 }

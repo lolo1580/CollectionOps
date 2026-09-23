@@ -118,6 +118,16 @@ public sealed class SessionApi : IDisposable
     public Task<InventoryItem> GetItemAsync(Guid itemId) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Get, $"api/v1/items/{itemId}");
 
+    public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision) =>
+        SendJsonAsync<TransferOutcome>(HttpMethod.Post, $"api/v1/items/{itemId}/transfers",
+            new { destination_space_id = destinationSpaceId, expected_revision = expectedRevision });
+
+    public async Task<IReadOnlyList<InventoryTransfer>> GetItemTransfersAsync(Guid itemId)
+    {
+        var result = await SendJsonAsync<TransferListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/transfers");
+        return result.Transfers;
+    }
+
     public async Task RevokeAsync(string sessionId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -237,3 +247,15 @@ public sealed record InventoryItem(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("revision")] string Revision);
 public sealed record ItemListResponse([property: JsonPropertyName("items")] List<InventoryItem> Items);
+public sealed record InventoryTransfer(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("source_space_id")] Guid SourceSpaceId,
+    [property: JsonPropertyName("destination_space_id")] Guid DestinationSpaceId,
+    [property: JsonPropertyName("source_inventory_number")] string SourceInventoryNumber,
+    [property: JsonPropertyName("destination_inventory_number")] string DestinationInventoryNumber,
+    [property: JsonPropertyName("transferred_at")] DateTimeOffset TransferredAt);
+public sealed record TransferOutcome(
+    [property: JsonPropertyName("item")] InventoryItem Item,
+    [property: JsonPropertyName("transfer")] InventoryTransfer Transfer);
+public sealed record TransferListResponse([property: JsonPropertyName("transfers")] List<InventoryTransfer> Transfers);
+public sealed record TransferDisplay(string Description, string Date);

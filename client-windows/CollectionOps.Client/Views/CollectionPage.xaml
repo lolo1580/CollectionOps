@@ -24,12 +24,30 @@
                 <Button x:Name="CreateItemButton" Content="Ajouter à l'inventaire" Click="OnCreateItem" />
                 <Button x:Name="RefreshItemsButton" Content="Actualiser" Click="OnRefreshItems" />
             </StackPanel>
-            <ListView x:Name="Items" SelectionMode="None">
+            <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="services:InventoryItem">
                         <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,8,0,8">
                             <TextBlock Text="{x:Bind InventoryNumber}" Width="80" FontWeight="SemiBold" />
                             <TextBlock Text="{x:Bind Name}" Width="440" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock x:Name="SelectedItemName" Text="Sélectionnez un objet dans l'inventaire." TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" />
+                <Button x:Name="TransferButton" Content="Transférer l'objet" Click="OnTransferItem" VerticalAlignment="Bottom" />
+                <Button x:Name="RefreshHistoryButton" Content="Actualiser l'historique" Click="OnRefreshHistory" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <ListView x:Name="TransferHistory" SelectionMode="None">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="services:TransferDisplay">
+                        <StackPanel Margin="0,8,0,8" Spacing="4">
+                            <TextBlock Text="{x:Bind Description}" TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind Date}" Opacity="0.7" />
                         </StackPanel>
                     </DataTemplate>
                 </ListView.ItemTemplate>

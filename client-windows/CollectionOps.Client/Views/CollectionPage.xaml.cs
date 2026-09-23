@@ -8,6 +8,9 @@ public sealed partial class CollectionPage : Page
 {
     private SessionApi Api => App.Sessions;
     private CollectionSpace? ActiveSpace => Spaces.SelectedItem as CollectionSpace;
+    private InventoryItem? ActiveItem => Items.SelectedItem as InventoryItem;
+    private IReadOnlyList<CollectionSpace> _spaces = [];
+    private bool _loadingSpaces;
 
     public CollectionPage()
     {
@@ -21,7 +24,45 @@ public sealed partial class CollectionPage : Page
 
     private async void OnRefreshSpaces(object sender, RoutedEventArgs e) => await RefreshSpacesAsync();
     private async void OnRefreshItems(object sender, RoutedEventArgs e) => await RefreshItemsAsync();
-    private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e) => await RefreshItemsAsync();
+    private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSpaces) return;
+        await RunAsync(async () =>
+        {
+            UpdateDestinationOptions();
+            TransferHistory.ItemsSource = null;
+            await RefreshItemsCoreAsync();
+        });
+    }
+
+    private async void OnItemSelected(object sender, SelectionChangedEventArgs e)
+    {
+        SelectedItemName.Text = ActiveItem is { } item
+            ? $"{item.Name} — n° {item.InventoryNumber} (révision {item.Revision})"
+            : "Sélectionnez un objet dans l'inventaire.";
+        TransferHistory.ItemsSource = null;
+        UpdateButtons();
+        if (ActiveItem is not null) await RefreshHistoryAsync();
+    }
+
+    private async void OnRefreshHistory(object sender, RoutedEventArgs e) => await RefreshHistoryAsync();
+
+    private async void OnTransferItem(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item || DestinationSpaces.SelectedItem is not CollectionSpace destination)
+        {
+            ShowStatus("Sélectionnez un objet et un espace de destination.", InfoBarSeverity.Warning);
+            return;
+        }
+        await RunAsync(async () =>
+        {
+            var outcome = await Api.TransferItemAsync(item.Id, destination.Id, item.Revision);
+            await LoadSpacesAsync(destination.Id);
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == outcome.Item.Id);
+            ShowStatus($"Objet transféré vers {destination.Name}, n° {outcome.Item.InventoryNumber}.", InfoBarSeverity.Success);
+        });
+    }
 
     private async void OnCreateSpace(object sender, RoutedEventArgs e)
     {
@@ -60,23 +101,54 @@ public sealed partial class CollectionPage : Page
 
     private async Task LoadSpacesAsync(Guid? selectedId)
     {
-        var spaces = await Api.GetSpacesAsync();
-        Spaces.ItemsSource = spaces;
-        Spaces.SelectedItem = spaces.FirstOrDefault(space => space.Id == selectedId) ?? spaces.FirstOrDefault();
-        if (spaces.Count == 0)
+        _spaces = await Api.GetSpacesAsync();
+        _loadingSpaces = true;
+        try
+        {
+            Spaces.ItemsSource = _spaces;
+            Spaces.SelectedItem = _spaces.FirstOrDefault(space => space.Id == selectedId) ?? _spaces.FirstOrDefault();
+        }
+        finally { _loadingSpaces = false; }
+        UpdateDestinationOptions();
+        TransferHistory.ItemsSource = null;
+        if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
             ShowStatus("Aucun espace visible. Créez votre premier espace.", InfoBarSeverity.Informational);
         }
+        else await RefreshItemsCoreAsync();
         UpdateButtons();
     }
 
-    private Task RefreshItemsAsync() => RunAsync(async () =>
+    private Task RefreshItemsAsync() => RunAsync(RefreshItemsCoreAsync);
+
+    private async Task RefreshItemsCoreAsync()
     {
         Items.ItemsSource = ActiveSpace is { } space
             ? await Api.GetItemsAsync(space.Id)
             : null;
+        Items.SelectedItem = null;
+        TransferHistory.ItemsSource = null;
+    }
+
+    private Task RefreshHistoryAsync() => RunAsync(async () =>
+    {
+        if (ActiveItem is not { } item) return;
+        var transfers = await Api.GetItemTransfersAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        TransferHistory.ItemsSource = transfers.Select(transfer => new TransferDisplay(
+            $"{SpaceName(transfer.SourceSpaceId)} n° {transfer.SourceInventoryNumber} → " +
+            $"{SpaceName(transfer.DestinationSpaceId)} n° {transfer.DestinationInventoryNumber}",
+            transfer.TransferredAt.ToLocalTime().ToString("g"))).ToList();
     });
+
+    private string SpaceName(Guid id) => _spaces.FirstOrDefault(space => space.Id == id)?.Name ?? "Espace inaccessible";
+
+    private void UpdateDestinationOptions()
+    {
+        DestinationSpaces.ItemsSource = _spaces.Where(space => space.Id != ActiveSpace?.Id).ToList();
+        DestinationSpaces.SelectedIndex = -1;
+    }
 
     private async Task RunAsync(Func<Task> action)
     {
@@ -84,6 +156,8 @@ public sealed partial class CollectionPage : Page
         CreateSpaceButton.IsEnabled = false;
         CreateItemButton.IsEnabled = false;
         RefreshItemsButton.IsEnabled = false;
+        TransferButton.IsEnabled = false;
+        RefreshHistoryButton.IsEnabled = false;
         try { await action(); }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
@@ -98,6 +172,8 @@ public sealed partial class CollectionPage : Page
         CreateSpaceButton.IsEnabled = Api.IsSignedIn;
         CreateItemButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null;
         RefreshItemsButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null;
+        TransferButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && DestinationSpaces.ItemsSource is not null;
+        RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
     }
 
     private void ShowStatus(string message, InfoBarSeverity severity)

@@ -12,6 +12,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Routes HTTP de transfert et d'historique des objets, avec droits sur les deux espaces, conflit de révision et protection des anciens espaces cités par l'historique.
+- Client Windows : transfert de l'objet sélectionné vers un autre espace et affichage de son historique.
+- Test MariaDB du transfert HTTP, des refus d'accès et de l'historique ; vérifications client du contrat de transfert.
 - Premier parcours connecté : création et liste d'espaces, création et liste d'objets, lecture d'un objet, avec contrôle du jeton et des droits par espace.
 - Écran Windows « Collection » pour choisir un espace et gérer un inventaire simple.
 - Migration accordant explicitement la lecture aux propriétaires d'espaces existants, et test HTTP du parcours et de l'isolement des espaces.

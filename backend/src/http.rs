@@ -18,8 +18,8 @@ use uuid::Uuid;
 use crate::{
     credentials::{EmailAddress, IdleTimeout, PasswordService, SessionToken, SessionTokenError},
     database::{
-        Database, DatabaseError, InventoryError, IssuedSession, Item, SessionError, SessionRecord,
-        Space, SpaceError,
+        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemTransfer, SessionError,
+        SessionRecord, Space, SpaceError, TransferOutcome,
     },
     security::{Permission, Principal},
 };
@@ -147,6 +147,22 @@ impl ApiError {
                 detail: "La permission requise manque dans cet espace.".to_owned(),
                 instance: instance.to_owned(),
                 code: "permission_denied",
+            },
+        }
+    }
+
+    fn revision_conflict(instance: &str) -> Self {
+        let status = StatusCode::CONFLICT;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Conflit de revision",
+                status: status.as_u16(),
+                detail: "L'objet a change depuis sa derniere lecture. Actualisez-le avant de recommencer."
+                    .to_owned(),
+                instance: instance.to_owned(),
+                code: "revision_conflict",
             },
         }
     }
@@ -626,6 +642,55 @@ pub struct CreateItemRequest {
     pub name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TransferItemRequest {
+    pub destination_space_id: Uuid,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemTransferResponse {
+    pub id: Uuid,
+    pub source_space_id: Uuid,
+    pub destination_space_id: Uuid,
+    pub source_inventory_number: String,
+    pub destination_inventory_number: String,
+    pub transferred_at: String,
+}
+
+impl From<ItemTransfer> for ItemTransferResponse {
+    fn from(value: ItemTransfer) -> Self {
+        Self {
+            id: value.id,
+            source_space_id: value.source_space_id,
+            destination_space_id: value.destination_space_id,
+            source_inventory_number: value.source_inventory_number.to_string(),
+            destination_inventory_number: value.destination_inventory_number.to_string(),
+            transferred_at: value.transferred_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TransferOutcomeResponse {
+    pub item: ItemResponse,
+    pub transfer: ItemTransferResponse,
+}
+
+impl From<TransferOutcome> for TransferOutcomeResponse {
+    fn from(value: TransferOutcome) -> Self {
+        Self {
+            item: value.item.into(),
+            transfer: value.transfer.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemTransferListResponse {
+    pub transfers: Vec<ItemTransferResponse>,
+}
+
 #[utoipa::path(get, path = "/api/v1/spaces", tag = "collection",
     responses((status = 200, body = SpaceListResponse), (status = 401, body = ProblemDetails)))]
 async fn list_spaces(
@@ -791,6 +856,138 @@ async fn get_item(
     Ok(Json(item.into()))
 }
 
+#[utoipa::path(post, path = "/api/v1/items/{item_id}/transfers", tag = "collection", request_body = TransferItemRequest,
+    params(("item_id" = Uuid, Path, description = "Objet a transferer")),
+    responses((status = 200, body = TransferOutcomeResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn transfer_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<TransferItemRequest>,
+) -> Result<Json<TransferOutcomeResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "La revision attendue doit etre un entier positif.",
+                "invalid_revision",
+            )
+        })?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    authorized_space(
+        database,
+        &principal,
+        payload.destination_space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let outcome = database
+        .transfer_item(
+            item_id,
+            payload.destination_space_id,
+            expected_revision,
+            principal.subject,
+        )
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::RevisionConflict) => ApiError::revision_conflict(uri.path()),
+            Some(InventoryError::SameSpace) => ApiError::invalid_request(
+                uri.path(),
+                "L'objet est deja dans cet espace.",
+                "same_space",
+            ),
+            Some(InventoryError::ItemNotFound | InventoryError::SpaceNotFound) => {
+                ApiError::resource_not_found(uri.path())
+            }
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok(Json(outcome.into()))
+}
+
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/transfers", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemTransferListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_item_transfers(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemTransferListResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let transfers = database
+        .item_transfers(item_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    for transfer in &transfers {
+        for space_id in [transfer.source_space_id, transfer.destination_space_id] {
+            if let Err(error) = authorized_space(
+                database,
+                &principal,
+                space_id,
+                Permission::CollectionsRead,
+                uri.path(),
+            )
+            .await
+            {
+                if error.status == StatusCode::INTERNAL_SERVER_ERROR {
+                    return Err(error);
+                }
+                return Err(ApiError::resource_not_found(uri.path()));
+            }
+        }
+    }
+    Ok(Json(ItemTransferListResponse {
+        transfers: transfers.into_iter().map(Into::into).collect(),
+    }))
+}
+
 fn session_error_to_api(instance: &str, error: &DatabaseError) -> ApiError {
     match error.session_error() {
         Some(SessionError::Unknown | SessionError::Expired) => {
@@ -828,7 +1025,9 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_space,
         list_items,
         create_item,
-        get_item
+        get_item,
+        transfer_item,
+        list_item_transfers
     ),
     components(schemas(
         HealthResponse,
@@ -841,6 +1040,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         LoginResponse,
         SpaceResponse, SpaceListResponse, CreateSpaceRequest,
         ItemResponse, ItemListResponse, CreateItemRequest,
+        TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         IdleTimeout,
         Principal,
         crate::security::Permission
@@ -928,6 +1128,10 @@ fn app_with_state(state: AppState) -> Router {
                 get(list_items).post(create_item),
             )
             .route(&format!("{API_PREFIX}/items/{{item_id}}"), get(get_item))
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}/transfers"),
+                get(list_item_transfers).post(transfer_item),
+            )
     } else {
         Router::new()
     };

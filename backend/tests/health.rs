@@ -55,6 +55,8 @@ async fn openapi_document_exposes_health_contract() {
     assert!(payload["paths"]["/api/v1/health"].is_object());
     assert!(payload["paths"]["/api/v1/health/live"].is_object());
     assert!(payload["paths"]["/api/v1/health/ready"].is_object());
+    assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["post"].is_object());
+    assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["get"].is_object());
 }
 
 #[tokio::test]
