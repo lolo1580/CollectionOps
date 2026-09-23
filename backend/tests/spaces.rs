@@ -414,6 +414,13 @@ async fn the_owner_cannot_be_removed_from_its_own_space() {
         .await
         .unwrap();
 
+    // A second administrator is authorized to manage this space, but not to remove its owner.
+    sqlx::query("UPDATE accounts SET is_system_admin = TRUE WHERE id = ?")
+        .bind(fixture.other_id.to_string())
+        .execute(fixture.database.pool())
+        .await
+        .unwrap();
+
     assert_eq!(
         fixture
             .database

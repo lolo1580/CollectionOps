@@ -13,7 +13,9 @@ await ReadInventoryPage();
 await AcceptNewAccountInvitationWithoutLeakingTokenToUrl();
 await AcceptExistingAccountInvitationWithSession();
 await RejectInvitationForDifferentServer();
-Console.WriteLine("SessionApi: 11 checks passed.");
+await AdminCanListSpacesWithoutInventoryAccess();
+await MemberGrantUpdateSendsExplicitRights();
+Console.WriteLine("SessionApi: 13 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -149,6 +151,38 @@ static async Task RejectInvitationForDifferentServer()
     var id = Guid.Parse("01900000-0000-7000-8000-000000000001");
     await ExpectAsync<InvalidOperationException>(() => api.AcceptInvitationAsync(
         $"collectionops://invite/{id}/{new string('A', 43)}?server=https%3A%2F%2Fcollectionops.example.org%2F", null, null));
+}
+
+static async Task AdminCanListSpacesWithoutInventoryAccess()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created,
+        """{"token":"secret","session":{"id":"session-1"},"principal":{"subject":"01900000-0000-7000-8000-000000000001","roles":["system_admin"]}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"spaces":[]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("admin@example.org", "password");
+    Assert(api.CurrentIsSystemAdmin, "The signed-in administrator role must be recognized.");
+    await api.GetAdminSpacesAsync();
+    Assert(handler.LastPath == "/api/v1/admin/spaces", "Administrators must use the separate administration route.");
+    Assert(handler.LastToken == "secret", "Administration calls must send the session token.");
+}
+
+static async Task MemberGrantUpdateSendsExplicitRights()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        """{"account_id":"01900000-0000-7000-8000-000000000002","display_name":"Membre","email":"member@example.org","permissions":["collections_read","finance_read"]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var space = Guid.Parse("01900000-0000-7000-8000-000000000001");
+    var member = Guid.Parse("01900000-0000-7000-8000-000000000002");
+    var result = await api.UpdateMemberPermissionsAsync(space, member, ["collections_read", "finance_read"]);
+    Assert(result.Permissions.Contains("finance_read"), "The updated member grants must parse.");
+    Assert(handler.LastPath == $"/api/v1/spaces/{space}/members/{member}/permissions", "Rights must target the selected member.");
+    Assert(handler.LastBody?.Contains("\"finance_read\"") == true, "The financial grant must be explicit in the request.");
 }
 
 static void Assert(bool condition, string message)

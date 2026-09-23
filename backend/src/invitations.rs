@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Duration, Utc};
 use sqlx::Row;
 use subtle::ConstantTimeEq;
@@ -5,7 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     credentials::{EmailAddress, InvitationToken, PasswordService},
-    database::Database,
+    database::{Database, permission_code, permission_from_code},
+    security::Permission,
 };
 
 const INVITATION_LIFETIME_DAYS: i64 = 7;
@@ -19,6 +22,7 @@ pub struct Invitation {
     pub expires_at: DateTime<Utc>,
     pub accepted_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub permissions: BTreeSet<Permission>,
 }
 
 pub struct IssuedInvitation {
@@ -45,6 +49,7 @@ pub enum InvitationError {
     ExistingAccountRequiresLogin,
     AccountMismatch,
     InvalidAccount,
+    InvalidGrants,
     Storage(sqlx::Error),
     TokenGeneration,
 }
@@ -105,6 +110,31 @@ impl Database {
         owner_id: Uuid,
         email: &EmailAddress,
     ) -> Result<IssuedInvitation, InvitationError> {
+        self.issue_invitation_with_grants(space_id, owner_id, email, &[Permission::CollectionsRead])
+            .await
+    }
+
+    /// Issues an invitation with only the explicitly selected space-scoped grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns a refusal for an empty/global grant set, non-owner, existing member, or storage
+    /// and randomness failures.
+    pub async fn issue_invitation_with_grants(
+        &self,
+        space_id: Uuid,
+        owner_id: Uuid,
+        email: &EmailAddress,
+        permissions: &[Permission],
+    ) -> Result<IssuedInvitation, InvitationError> {
+        let permissions: BTreeSet<Permission> = permissions.iter().copied().collect();
+        if permissions.is_empty()
+            || permissions
+                .iter()
+                .any(|permission| !permission.is_space_scoped())
+        {
+            return Err(InvitationError::InvalidGrants);
+        }
         let token = InvitationToken::generate().map_err(|_| InvitationError::TokenGeneration)?;
         let now = Utc::now();
         let expires_at = now + Duration::days(INVITATION_LIFETIME_DAYS);
@@ -169,10 +199,13 @@ impl Database {
             .bind(expires_at)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO space_invitation_grants (invitation_id, permission_code) VALUES (?, 'collections_read')")
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        for permission in &permissions {
+            sqlx::query("INSERT INTO space_invitation_grants (invitation_id, permission_code) VALUES (?, ?)")
+                .bind(id.to_string())
+                .bind(permission_code(*permission))
+                .execute(&mut *tx)
+                .await?;
+        }
         audit(&mut *tx, space_id, owner_id, id, "invitation_created").await?;
         tx.commit().await?;
 
@@ -185,6 +218,7 @@ impl Database {
                 expires_at,
                 accepted_at: None,
                 revoked_at: None,
+                permissions,
             },
             token,
         })
@@ -212,23 +246,39 @@ impl Database {
             .bind(space_id.to_string())
             .fetch_all(self.pool())
             .await?;
-        rows.iter()
-            .map(|row| {
-                let id: Vec<u8> = row.try_get("id")?;
-                Ok(Invitation {
-                    id: Uuid::parse_str(
-                        std::str::from_utf8(&id).map_err(|_| InvitationError::InvalidAccount)?,
-                    )
-                    .map_err(|_| InvitationError::InvalidAccount)?,
-                    space_id,
-                    recipient_email: row.try_get("recipient_email")?,
-                    created_at: row.try_get("created_at")?,
-                    expires_at: row.try_get("expires_at")?,
-                    accepted_at: row.try_get("accepted_at")?,
-                    revoked_at: row.try_get("revoked_at")?,
-                })
-            })
-            .collect()
+        let mut invitations = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let id: Vec<u8> = row.try_get("id")?;
+            let id = Uuid::parse_str(
+                std::str::from_utf8(&id).map_err(|_| InvitationError::InvalidAccount)?,
+            )
+            .map_err(|_| InvitationError::InvalidAccount)?;
+            let grants = sqlx::query(
+                "SELECT permission_code FROM space_invitation_grants WHERE invitation_id = ?",
+            )
+            .bind(id.to_string())
+            .fetch_all(self.pool())
+            .await?;
+            let mut permissions = BTreeSet::new();
+            for grant in grants {
+                let code: Vec<u8> = grant.try_get("permission_code")?;
+                let code =
+                    std::str::from_utf8(&code).map_err(|_| InvitationError::InvalidGrants)?;
+                permissions
+                    .insert(permission_from_code(code).ok_or(InvitationError::InvalidGrants)?);
+            }
+            invitations.push(Invitation {
+                id,
+                space_id,
+                recipient_email: row.try_get("recipient_email")?,
+                created_at: row.try_get("created_at")?,
+                expires_at: row.try_get("expires_at")?,
+                accepted_at: row.try_get("accepted_at")?,
+                revoked_at: row.try_get("revoked_at")?,
+                permissions,
+            });
+        }
+        Ok(invitations)
     }
 
     /// Revokes one pending invitation and audits the change.

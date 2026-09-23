@@ -55,12 +55,12 @@ La création d'un espace établit ensemble l'espace, la ligne de compteur et l'a
 ## Questions restantes pour les extensions
 
 - Faut-il étendre la politique actuelle (ASCII, domaine mis en minuscules, unicité insensible à la casse) pour gérer les adresses internationales, et comment vérifier les comptes préexistants non vérifiés ?
-- Le propriétaire peut-il déléguer la gestion des membres et des droits financiers, hors création d'invitations réservée au propriétaire ?
+- Faut-il introduire plus tard un rôle de gestionnaire distinct du propriétaire et de l'administrateur système ? La V1 actuelle ne le prévoit pas.
 - Quelles sont les règles de suppression et de conservation des espaces, objets, comptes et invitations ?
 
-Ces réponses guident les migrations et routes complémentaires. La première tranche d'invitations utilise SMTP et un lien à coller dans le client Windows ; les droits sont pour l'instant fixés à `collections_read`. Les transactions et contraintes ci-dessus restent des critères de revue pour les extensions à venir.
+Ces réponses guident les migrations et routes complémentaires. La première tranche d'invitations utilise SMTP et un lien à coller dans le client Windows ; `collections_read` est présélectionné, mais le propriétaire peut choisir tout droit d'espace explicite, y compris financier. Le propriétaire ou l'administrateur système gère les membres et leurs droits, sans gestionnaire intermédiaire. Les transactions et contraintes ci-dessus restent des critères de revue pour les extensions à venir.
 
-La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail et les mots de passe, la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions, et la [migration des invitations](../../backend/migrations/202609230001_space_invitations.sql) ajoute les liens, droits et événements d'audit. SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini. Le [brouillon SQL](../schema/invitations-draft.sql) reste une référence de conception, non une migration à exécuter.
+La [première migration MariaDB](../../backend/migrations/202609220001_core.sql) fixe les contraintes du noyau comptes, espaces et inventaire, la [deuxième](../../backend/migrations/202609220002_account_credentials.sql) ajoute l'adresse e-mail et les mots de passe, la [troisième](../../backend/migrations/202609220003_account_sessions.sql) crée les sessions, la [migration des invitations](../../backend/migrations/202609230001_space_invitations.sql) ajoute les liens et leurs droits, et la [migration d'audit des membres](../../backend/migrations/202609230002_member_audit.sql) conserve chaque changement de droits ou retrait avec auteur, cible et droits avant/après. SQLx les applique au démarrage dès que `COLLECTIONOPS_DATABASE_URL` est défini. Le [brouillon SQL](../schema/invitations-draft.sql) reste une référence de conception, non une migration à exécuter.
 
 ## Invitation et acceptation
 

@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
@@ -21,8 +21,8 @@ use crate::{
         SessionTokenError,
     },
     database::{
-        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemTransfer, SessionError,
-        SessionRecord, Space, SpaceError, TransferOutcome,
+        Database, DatabaseError, InventoryError, IssuedSession, Item, ItemTransfer,
+        MemberWithAccount, SessionError, SessionRecord, Space, SpaceError, TransferOutcome,
     },
     invitations::{Invitation, InvitationError},
     mail::SmtpDelivery,
@@ -545,17 +545,25 @@ fn login_response(issued: IssuedSession) -> LoginResponse {
     LoginResponse {
         session: SessionSummary::from(issued.session),
         token,
-        principal: collection_principal(issued.account_id, issued.display_name),
+        principal: collection_principal(
+            issued.account_id,
+            issued.display_name,
+            issued.is_system_admin,
+        ),
     }
 }
 
 // At this stage every authenticated account may use collection features, but a space still
 // requires an explicit membership and grant. Other application permissions are never inferred.
-fn collection_principal(subject: Uuid, display_name: String) -> Principal {
+fn collection_principal(subject: Uuid, display_name: String, is_system_admin: bool) -> Principal {
     Principal {
         subject,
         display_name,
-        roles: BTreeSet::default(),
+        roles: if is_system_admin {
+            ["system_admin".to_owned()].into()
+        } else {
+            BTreeSet::default()
+        },
         permissions: [Permission::CollectionsRead, Permission::CollectionsWrite].into(),
     }
 }
@@ -576,7 +584,11 @@ async fn authenticated_headers(
         .await
         .map_err(|error| session_error_to_api(instance, &error))?;
     let subject = Uuid::parse_str(&session.account_id).map_err(|_| ApiError::internal(instance))?;
-    Ok(collection_principal(subject, session.display_name))
+    Ok(collection_principal(
+        subject,
+        session.display_name,
+        session.is_system_admin,
+    ))
 }
 
 async fn authorized_space(
@@ -634,8 +646,160 @@ pub struct CreateSpaceRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceMemberResponse {
+    pub account_id: Uuid,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub permissions: Vec<Permission>,
+}
+
+impl From<MemberWithAccount> for SpaceMemberResponse {
+    fn from(value: MemberWithAccount) -> Self {
+        Self {
+            account_id: value.membership.account_id,
+            display_name: value.display_name,
+            email: value.email,
+            permissions: value.membership.permissions.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceMemberListResponse {
+    pub members: Vec<SpaceMemberResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateMemberPermissionsRequest {
+    pub permissions: Vec<Permission>,
+}
+
+fn can_manage_members(principal: &Principal, owner_account_id: Uuid) -> bool {
+    principal.subject == owner_account_id || principal.roles.contains("system_admin")
+}
+
+fn member_error(error: &DatabaseError, instance: &str) -> ApiError {
+    match error.space_error() {
+        Some(SpaceError::NotMember | SpaceError::SpaceNotFound | SpaceError::NotAuthorized) => {
+            ApiError::resource_not_found(instance)
+        }
+        Some(SpaceError::CannotChangeOwnGrants | SpaceError::OwnerCannotBeRemoved) => {
+            ApiError::forbidden(instance)
+        }
+        Some(SpaceError::OwnerCoreGrantsRequired) => ApiError::invalid_request(
+            instance,
+            "Le propriétaire doit conserver la lecture et l'écriture de collection.",
+            "owner_core_grants_required",
+        ),
+        Some(SpaceError::PermissionNotSpaceScoped) => ApiError::invalid_request(
+            instance,
+            "Un droit demandé n'appartient pas à un espace.",
+            "invalid_grants",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/members", tag = "sharing",
+    responses((status = 200, body = SpaceMemberListResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_members(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<SpaceMemberListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let members = db
+        .space_members_with_accounts(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(SpaceMemberListResponse {
+        members: members.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(put, path = "/api/v1/spaces/{space_id}/members/{account_id}/permissions", tag = "sharing",
+    request_body = UpdateMemberPermissionsRequest,
+    responses((status = 200, body = SpaceMemberResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn update_member_permissions(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, account_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateMemberPermissionsRequest>,
+) -> Result<Json<SpaceMemberResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    db.set_member_permissions(
+        space_id,
+        account_id,
+        &payload.permissions,
+        principal.subject,
+    )
+    .await
+    .map_err(|e| member_error(&e, uri.path()))?;
+    let member = db
+        .space_members_with_accounts(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?
+        .into_iter()
+        .find(|member| member.membership.account_id == account_id)
+        .ok_or_else(|| ApiError::internal(uri.path()))?;
+    Ok(Json(member.into()))
+}
+
+#[utoipa::path(delete, path = "/api/v1/spaces/{space_id}/members/{account_id}", tag = "sharing",
+    responses((status = 204), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn remove_member(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, account_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    db.remove_member(space_id, account_id, principal.subject)
+        .await
+        .map_err(|e| member_error(&e, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateInvitationRequest {
     pub email: String,
+    /// Defaults to collection read when omitted. Empty and non-space grants are rejected.
+    pub permissions: Option<Vec<Permission>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -647,6 +811,7 @@ pub struct InvitationResponse {
     pub expires_at: String,
     pub accepted_at: Option<String>,
     pub revoked_at: Option<String>,
+    pub permissions: Vec<Permission>,
 }
 
 impl From<Invitation> for InvitationResponse {
@@ -659,6 +824,7 @@ impl From<Invitation> for InvitationResponse {
             expires_at: value.expires_at.to_rfc3339(),
             accepted_at: value.accepted_at.map(|d| d.to_rfc3339()),
             revoked_at: value.revoked_at.map(|d| d.to_rfc3339()),
+            permissions: value.permissions.into_iter().collect(),
         }
     }
 }
@@ -692,6 +858,11 @@ fn invitation_error(error: &InvitationError, instance: &str) -> ApiError {
         InvitationError::InvalidAccount => {
             ApiError::invalid_request(instance, "Nom ou mot de passe invalide.", "invalid_account")
         }
+        InvitationError::InvalidGrants => ApiError::invalid_request(
+            instance,
+            "Choisissez au moins un droit d'espace valide.",
+            "invalid_grants",
+        ),
         InvitationError::Storage(_) | InvitationError::TokenGeneration => {
             ApiError::internal(instance)
         }
@@ -727,8 +898,11 @@ async fn create_invitation(
     if space.owner_account_id != principal.subject {
         return Err(ApiError::resource_not_found(uri.path()));
     }
+    let permissions = payload
+        .permissions
+        .unwrap_or_else(|| vec![Permission::CollectionsRead]);
     let issued = db
-        .issue_invitation(space_id, principal.subject, &email)
+        .issue_invitation_with_grants(space_id, principal.subject, &email, &permissions)
         .await
         .map_err(|e| invitation_error(&e, uri.path()))?;
     if mail
@@ -883,6 +1057,12 @@ pub struct CreateItemRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RenameItemRequest {
+    pub name: String,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TransferItemRequest {
     pub destination_space_id: Uuid,
     pub expected_revision: String,
@@ -968,6 +1148,30 @@ async fn list_spaces(
         }
     }
     Ok(Json(SpaceListResponse { spaces: visible }))
+}
+
+#[utoipa::path(get, path = "/api/v1/admin/spaces", tag = "sharing",
+    responses((status = 200, body = SpaceListResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_admin_spaces(
+    State(state): State<AppState>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<Json<SpaceListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    if !principal.roles.contains("system_admin") {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let spaces = db
+        .all_spaces()
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(SpaceListResponse {
+        spaces: spaces.into_iter().map(Into::into).collect(),
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/spaces", tag = "collection", request_body = CreateSpaceRequest,
@@ -1138,6 +1342,64 @@ async fn get_item(
     Ok(Json(item.into()))
 }
 
+#[utoipa::path(patch, path = "/api/v1/items/{item_id}", tag = "collection", request_body = RenameItemRequest,
+    params(("item_id" = Uuid, Path, description = "Objet a renommer")),
+    responses((status = 200, body = ItemResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn rename_item(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<RenameItemRequest>,
+) -> Result<Json<ItemResponse>, ApiError> {
+    let database = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(database, &headers, uri.path()).await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "La revision attendue doit etre un entier positif.",
+                "invalid_revision",
+            )
+        })?;
+    let item = database
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        database,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let item = database
+        .rename_item(item_id, &payload.name, expected_revision)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::InvalidName) => {
+                ApiError::invalid_request(uri.path(), "Nom d'objet invalide.", "invalid_name")
+            }
+            Some(InventoryError::RevisionConflict) => ApiError::revision_conflict(uri.path()),
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    Ok(Json(item.into()))
+}
+
 #[utoipa::path(post, path = "/api/v1/items/{item_id}/transfers", tag = "collection", request_body = TransferItemRequest,
     params(("item_id" = Uuid, Path, description = "Objet a transferer")),
     responses((status = 200, body = TransferOutcomeResponse), (status = 401, body = ProblemDetails),
@@ -1304,16 +1566,21 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         list_sessions,
         revoke_session,
         list_spaces,
+        list_admin_spaces,
         create_space,
         list_items,
         create_item,
         get_item,
+        rename_item,
         transfer_item,
         list_item_transfers,
         create_invitation,
         list_invitations,
         revoke_invitation,
-        accept_invitation
+        accept_invitation,
+        list_members,
+        update_member_permissions,
+        remove_member
     ),
     components(schemas(
         HealthResponse,
@@ -1326,7 +1593,8 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         LoginResponse,
         SpaceResponse, SpaceListResponse, CreateSpaceRequest,
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
-        ItemResponse, ItemListResponse, CreateItemRequest,
+        SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
+        ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         IdleTimeout,
         Principal,
@@ -1419,12 +1687,28 @@ fn app_with_state(state: AppState) -> Router {
                 get(list_spaces).post(create_space),
             )
             .route(
+                &format!("{API_PREFIX}/admin/spaces"),
+                get(list_admin_spaces),
+            )
+            .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/items"),
                 get(list_items).post(create_item),
             )
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/invitations"),
                 get(list_invitations).post(create_invitation),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/members"),
+                get(list_members),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/members/{{account_id}}/permissions"),
+                put(update_member_permissions),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/members/{{account_id}}"),
+                delete(remove_member),
             )
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/invitations/{{invitation_id}}"),
@@ -1434,7 +1718,10 @@ fn app_with_state(state: AppState) -> Router {
                 &format!("{API_PREFIX}/invitations/{{invitation_id}}/accept"),
                 post(accept_invitation),
             )
-            .route(&format!("{API_PREFIX}/items/{{item_id}}"), get(get_item))
+            .route(
+                &format!("{API_PREFIX}/items/{{item_id}}"),
+                get(get_item).patch(rename_item),
+            )
             .route(
                 &format!("{API_PREFIX}/items/{{item_id}}/transfers"),
                 get(list_item_transfers).post(transfer_item),

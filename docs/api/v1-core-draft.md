@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée et transferts d'objets sont exposées ; la synchronisation reste à définir.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage et transferts d'objets sont exposées ; la synchronisation reste à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -36,6 +36,10 @@ Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou d
 
 `GET /api/v1/items/{item_id}` exige `collections_read` dans l'espace courant de l'objet. La réponse `200` utilise la même représentation. L'identifiant de l'objet reste stable lors d'un transfert ; son `space_id` et son `inventory_number` changent.
 
+## Renommer un objet
+
+`PATCH /api/v1/items/{item_id}` exige `collections_write` dans l'espace courant. Le corps contient `{"name":"Nouveau nom","expected_revision":"1"}`. Le nom est nettoyé et limité à 255 caractères comme à la création. La transaction verrouille l'objet, refuse une révision obsolète avec `409`, modifie le nom et incrémente la révision. Le numéro d'inventaire et l'identifiant stable ne changent pas. Cette première fiche éditable n'ajoute pas encore de description, catégories, emplacements ou champs personnalisés.
+
 ## Transférer un objet
 
 `POST /api/v1/items/{item_id}/transfers` exige `collections_write` dans l'espace source et dans l'espace de destination. Le corps indique la destination et la révision lue par le client :
@@ -57,4 +61,4 @@ Le backend vérifie d'abord les droits dans les deux espaces. La transaction ver
 
 ## Hors de cette première tranche
 
-La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations de base sont exposées depuis le 2026-09-23 ; le choix de droits, l'édition, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.
+La liste des sessions et la connexion sont exposées depuis le 2026-09-22 (voir [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md)). Les invitations à droits sélectionnables, la gestion des membres et le renommage simple sont exposés depuis le 2026-09-23 ; l'édition enrichie, l'archivage, les documents, les montants et la synchronisation exigent encore leurs contrats spécifiques. L'idempotence des commandes sera définie avec le protocole de synchronisation avant ouverture aux modifications hors ligne.

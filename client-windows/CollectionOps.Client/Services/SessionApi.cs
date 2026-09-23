@@ -17,6 +17,7 @@ public sealed class SessionApi : IDisposable
     public string? ServerAddress => _server?.ToString();
     public string? CurrentSessionId { get; private set; }
     public Guid? CurrentAccountId { get; private set; }
+    public bool CurrentIsSystemAdmin { get; private set; }
 
     public SessionApi(HttpMessageHandler? handler = null)
     {
@@ -83,6 +84,7 @@ public sealed class SessionApi : IDisposable
         _token = session.Token;
         CurrentSessionId = session.Session.Id;
         CurrentAccountId = session.Principal?.Subject;
+        CurrentIsSystemAdmin = session.Principal?.Roles?.Contains("system_admin") == true;
     }
 
     public async Task<IReadOnlyList<SessionSummary>> GetSessionsAsync()
@@ -105,6 +107,12 @@ public sealed class SessionApi : IDisposable
         return result.Spaces;
     }
 
+    public async Task<IReadOnlyList<CollectionSpace>> GetAdminSpacesAsync()
+    {
+        var result = await SendJsonAsync<SpaceListResponse>(HttpMethod.Get, "api/v1/admin/spaces");
+        return result.Spaces;
+    }
+
     public Task<CollectionSpace> CreateSpaceAsync(string name) =>
         SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
 
@@ -114,8 +122,24 @@ public sealed class SessionApi : IDisposable
         return result.Invitations;
     }
 
-    public Task<SpaceInvitation> InviteAsync(Guid spaceId, string email) =>
-        SendJsonAsync<SpaceInvitation>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/invitations", new { email });
+    public async Task<IReadOnlyList<SpaceMember>> GetMembersAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<SpaceMemberListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/members");
+        return result.Members;
+    }
+
+    public Task<SpaceMember> UpdateMemberPermissionsAsync(Guid spaceId, Guid accountId, IReadOnlyList<string> permissions) =>
+        SendJsonAsync<SpaceMember>(HttpMethod.Put, $"api/v1/spaces/{spaceId}/members/{accountId}/permissions", new { permissions });
+
+    public async Task RemoveMemberAsync(Guid spaceId, Guid accountId)
+    {
+        using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/spaces/{spaceId}/members/{accountId}");
+        using var response = await _client.SendAsync(request);
+        await EnsureSuccessAsync(response);
+    }
+
+    public Task<SpaceInvitation> InviteAsync(Guid spaceId, string email, IReadOnlyList<string> permissions) =>
+        SendJsonAsync<SpaceInvitation>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/invitations", new { email, permissions });
 
     public async Task RevokeInvitationAsync(Guid spaceId, Guid invitationId)
     {
@@ -166,6 +190,10 @@ public sealed class SessionApi : IDisposable
     public Task<InventoryItem> GetItemAsync(Guid itemId) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Get, $"api/v1/items/{itemId}");
 
+    public Task<InventoryItem> RenameItemAsync(Guid itemId, string name, string expectedRevision) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Patch, $"api/v1/items/{itemId}",
+            new { name, expected_revision = expectedRevision });
+
     public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision) =>
         SendJsonAsync<TransferOutcome>(HttpMethod.Post, $"api/v1/items/{itemId}/transfers",
             new { destination_space_id = destinationSpaceId, expected_revision = expectedRevision });
@@ -196,6 +224,7 @@ public sealed class SessionApi : IDisposable
         _token = null;
         CurrentSessionId = null;
         CurrentAccountId = null;
+        CurrentIsSystemAdmin = false;
     }
 
     public void Dispose() => _client.Dispose();
@@ -290,7 +319,9 @@ public sealed record LoginResponse(
     [property: JsonPropertyName("token")] string Token,
     [property: JsonPropertyName("session")] SessionSummary Session,
     [property: JsonPropertyName("principal")] SessionPrincipal? Principal);
-public sealed record SessionPrincipal([property: JsonPropertyName("subject")] Guid Subject);
+public sealed record SessionPrincipal(
+    [property: JsonPropertyName("subject")] Guid Subject,
+    [property: JsonPropertyName("roles")] List<string>? Roles);
 public sealed record HealthResponse([property: JsonPropertyName("status")] string Status);
 public sealed record ProblemResponse([property: JsonPropertyName("detail")] string? Detail);
 public sealed record CollectionSpace(
@@ -303,18 +334,41 @@ public sealed record SpaceInvitation(
     [property: JsonPropertyName("recipient_email")] string RecipientEmail,
     [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt,
     [property: JsonPropertyName("accepted_at")] DateTimeOffset? AcceptedAt,
-    [property: JsonPropertyName("revoked_at")] DateTimeOffset? RevokedAt)
+    [property: JsonPropertyName("revoked_at")] DateTimeOffset? RevokedAt,
+    [property: JsonPropertyName("permissions")] List<string> Permissions)
 {
     public string Status => AcceptedAt is not null ? "Acceptée" : RevokedAt is not null ? "Révoquée" : ExpiresAt <= DateTimeOffset.UtcNow ? "Expirée" : "En attente";
     public bool IsPending => AcceptedAt is null && RevokedAt is null && ExpiresAt > DateTimeOffset.UtcNow;
+    public string PermissionsSummary => string.Join(", ", Permissions.Select(permission => permission switch
+    {
+        "collections_read" => "collection : lecture",
+        "collections_write" => "collection : écriture",
+        "acquisitions_read" => "acquisitions : lecture",
+        "acquisitions_write" => "acquisitions : écriture",
+        "finance_read" => "finances : lecture",
+        "finance_write" => "finances : écriture",
+        "documents_read" => "documents : lecture",
+        "documents_write" => "documents : écriture",
+        _ => permission,
+    }));
 }
 public sealed record InvitationListResponse([property: JsonPropertyName("invitations")] List<SpaceInvitation> Invitations);
+public sealed record SpaceMember(
+    [property: JsonPropertyName("account_id")] Guid AccountId,
+    [property: JsonPropertyName("display_name")] string DisplayName,
+    [property: JsonPropertyName("email")] string? Email,
+    [property: JsonPropertyName("permissions")] List<string> Permissions)
+{
+    public string Label => Email is null ? DisplayName : $"{DisplayName} ({Email})";
+}
+public sealed record SpaceMemberListResponse([property: JsonPropertyName("members")] List<SpaceMember> Members);
 public sealed record InventoryItem(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("space_id")] Guid SpaceId,
     [property: JsonPropertyName("inventory_number")] string InventoryNumber,
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("revision")] string Revision);
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt);
 public sealed record ItemPageResponse(
     [property: JsonPropertyName("items")] List<InventoryItem> Items,
     [property: JsonPropertyName("next_cursor")] string? NextCursor);

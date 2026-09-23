@@ -20,7 +20,19 @@
 
             <StackPanel x:Name="SharingPanel" Spacing="8" Visibility="Collapsed">
                 <TextBlock Text="Partager cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
-                <TextBlock Text="Seul le propriétaire peut inviter. L'invité reçoit la lecture de la collection, sans accès financier. Un nouvel envoi à la même adresse invalide le précédent lien." TextWrapping="Wrap" />
+                <TextBlock Text="Seul le propriétaire peut inviter. La lecture de la collection est présélectionnée ; aucun droit financier n'est accordé par défaut. Un nouvel envoi à la même adresse invalide le précédent lien." TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <CheckBox x:Name="GrantCollectionsRead" Content="Collection · lire" IsChecked="True" />
+                    <CheckBox x:Name="GrantCollectionsWrite" Content="Collection · écrire" />
+                    <CheckBox x:Name="GrantAcquisitionsRead" Content="Acquisitions · lire" />
+                    <CheckBox x:Name="GrantAcquisitionsWrite" Content="Acquisitions · écrire" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <CheckBox x:Name="GrantFinanceRead" Content="Finances · lire" />
+                    <CheckBox x:Name="GrantFinanceWrite" Content="Finances · écrire" />
+                    <CheckBox x:Name="GrantDocumentsRead" Content="Documents · lire" />
+                    <CheckBox x:Name="GrantDocumentsWrite" Content="Documents · écrire" />
+                </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <TextBox x:Name="InviteEmail" PlaceholderText="Adresse e-mail" Width="320" />
                     <Button x:Name="InviteButton" Content="Envoyer l'invitation" Click="OnInvite" />
@@ -32,11 +44,36 @@
                             <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,6,0,6">
                                 <TextBlock Text="{x:Bind RecipientEmail}" Width="280" TextTrimming="CharacterEllipsis" />
                                 <TextBlock Text="{x:Bind Status}" Width="90" />
+                                <TextBlock Text="{x:Bind PermissionsSummary}" Width="260" TextTrimming="CharacterEllipsis" />
                                 <Button Content="Révoquer" Tag="{x:Bind Id}" IsEnabled="{x:Bind IsPending}" Click="OnRevokeInvitation" />
                             </StackPanel>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
+            </StackPanel>
+
+            <StackPanel x:Name="MembersPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock Text="Membres et droits" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <TextBlock Text="Le propriétaire ou un administrateur système peut modifier les droits d'un autre membre, y compris les finances, ou le retirer. Ces actions sont auditées." TextWrapping="Wrap" />
+                <ComboBox x:Name="Members" Header="Membre" Width="400" HorizontalAlignment="Left"
+                          DisplayMemberPath="Label" SelectionChanged="OnMemberSelected" />
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <CheckBox x:Name="MemberCollectionsRead" Content="Collection · lire" />
+                    <CheckBox x:Name="MemberCollectionsWrite" Content="Collection · écrire" />
+                    <CheckBox x:Name="MemberAcquisitionsRead" Content="Acquisitions · lire" />
+                    <CheckBox x:Name="MemberAcquisitionsWrite" Content="Acquisitions · écrire" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <CheckBox x:Name="MemberFinanceRead" Content="Finances · lire" />
+                    <CheckBox x:Name="MemberFinanceWrite" Content="Finances · écrire" />
+                    <CheckBox x:Name="MemberDocumentsRead" Content="Documents · lire" />
+                    <CheckBox x:Name="MemberDocumentsWrite" Content="Documents · écrire" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="SaveMemberRightsButton" Content="Enregistrer les droits" Click="OnSaveMemberRights" />
+                    <Button x:Name="RemoveMemberButton" Content="Retirer ce membre" Click="OnRemoveMember" />
+                    <Button x:Name="RefreshMembersButton" Content="Actualiser" Click="OnRefreshMembers" />
+                </StackPanel>
             </StackPanel>
 
             <TextBlock Text="Inventaire" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
@@ -61,8 +98,14 @@
             </ListView>
             <Button x:Name="LoadMoreButton" Content="Charger la suite" Click="OnLoadMore" HorizontalAlignment="Left" />
 
-            <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Fiche de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="SelectedItemName" Text="Sélectionnez un objet dans l'inventaire." TextWrapping="Wrap" />
+            <TextBlock x:Name="SelectedItemDetails" Text="" TextWrapping="Wrap" Opacity="0.7" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="EditedItemName" Header="Nom" Width="360" />
+                <Button x:Name="SaveItemNameButton" Content="Enregistrer le nom" Click="OnSaveItemName" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" />
                 <Button x:Name="TransferButton" Content="Transférer l'objet" Click="OnTransferItem" VerticalAlignment="Bottom" />

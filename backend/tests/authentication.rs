@@ -289,6 +289,40 @@ async fn collection_path_enforces_session_and_space_membership() {
         .unwrap();
     assert_eq!(owner_item.status(), StatusCode::OK);
 
+    let renamed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&item_path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::from(
+                    json!({"name":"Appareil renomme", "expected_revision":"1"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), StatusCode::OK);
+    assert_eq!(body_json(renamed).await["revision"], "2");
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&item_path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &owner_token)
+                .body(Body::from(
+                    json!({"name":"Ecrasement", "expected_revision":"1"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
     audit_db
         .add_member(
             uuid::Uuid::parse_str(space_id).unwrap(),
@@ -309,6 +343,22 @@ async fn collection_path_enforces_session_and_space_membership() {
         .await
         .unwrap();
     assert_eq!(read_only_list.status(), StatusCode::OK);
+    let rename_denied = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&item_path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(SESSION_TOKEN_HEADER, &outsider_token)
+                .body(Body::from(
+                    json!({"name":"Interdit", "expected_revision":"2"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rename_denied.status(), StatusCode::FORBIDDEN);
     let write_denied = router
         .oneshot(
             Request::builder()

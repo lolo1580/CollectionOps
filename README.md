@@ -78,7 +78,7 @@ Chaque opération sur un espace doit vérifier deux choses : une permission appl
 
 Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré de son espace : le transfert de propriété sera une opération distincte et auditée.
 
-Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Le propriétaire peut inviter par e-mail, voir les invitations et les révoquer. Un nouvel envoi à la même adresse invalide le lien précédent. L'invité reçoit seulement `collections_read` après acceptation. Le choix de droits supplémentaires, les délégations et les réglages avancés restent à développer.
+Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Seul le propriétaire invite par e-mail et choisit les droits d'espace ; `collections_read` est le seul droit présélectionné. Un nouvel envoi à la même adresse invalide le lien précédent. Le propriétaire ou l'administrateur système peut consulter les membres, changer leurs droits (finances incluses) et retirer un membre, mais ne peut ni se donner des droits à lui-même ni retirer le propriétaire. Les changements et retraits sont audités. Aucun rôle intermédiaire de gestionnaire n'est prévu pour l'instant.
 
 ## Attribution des numéros d'inventaire
 
@@ -106,20 +106,26 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 
 | Méthode | Route | Rôle |
 |---|---|---|
-| `POST` | `/api/v1/spaces/{space_id}/invitations` | Propriétaire : envoyer une invitation SMTP (`{"email":"..."}`) |
+| `POST` | `/api/v1/spaces/{space_id}/invitations` | Propriétaire : envoyer une invitation SMTP (`{"email":"...","permissions":["collections_read"]}`) |
 | `GET` | `/api/v1/spaces/{space_id}/invitations` | Propriétaire : voir les invitations sans jeton |
 | `DELETE` | `/api/v1/spaces/{space_id}/invitations/{invitation_id}` | Propriétaire : révoquer un lien en attente |
 | `POST` | `/api/v1/invitations/{invitation_id}/accept` | Accepter avec `token` ; fournir `display_name` et `password` uniquement pour créer un compte |
+| `GET` | `/api/v1/admin/spaces` | Administrateur système : lister les espaces à administrer, sans accès implicite à leur inventaire |
+| `GET` | `/api/v1/spaces/{space_id}/members` | Propriétaire ou administrateur : lister les membres et leurs droits |
+| `PUT` | `/api/v1/spaces/{space_id}/members/{account_id}/permissions` | Propriétaire ou administrateur : remplacer les droits explicites d'un autre membre |
+| `DELETE` | `/api/v1/spaces/{space_id}/members/{account_id}` | Propriétaire ou administrateur : retirer un membre autre que le propriétaire |
 
 Le destinataire avec un compte existant doit se connecter avec l'adresse e-mail invitée, déjà vérifiée. Un destinataire sans compte crée son compte depuis le lien reçu ; la possession du lien prouve alors l'adresse. L'acceptation, la création éventuelle du compte, l'adhésion et les droits sont atomiques. Une invitation expirée, révoquée, déjà acceptée ou adressée à un membre existant ne modifie pas les droits. Les créations, révocations et acceptations sont auditées.
 
 Le lien `collectionops://invite/...?...` se colle dans **Compte → Accepter une invitation** du client Windows. Il n'est pas encore associé automatiquement au protocole Windows ; le collage est nécessaire. Le lien contient l'adresse HTTPS du serveur configurée par l'exploitant, et le client refuse de transmettre le jeton si son adresse de serveur ne correspond pas. Le jeton n'est jamais placé dans une URL HTTP.
 
+La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. Les autres champs de fiche restent à concevoir. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
+
 ## Démarrer le client Windows
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour le transférer et voir son historique. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, gérer les membres si l'on est propriétaire ou administrateur, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour voir sa fiche, le renommer, le transférer et voir son historique. Un administrateur qui n'est pas membre peut administrer les droits sans consulter l'inventaire. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 
@@ -160,6 +166,8 @@ Sans `COLLECTIONOPS_DATABASE_URL`, le service démarre sans persistance et n'ouv
 Le premier administrateur n'est créé que si aucun compte ne porte déjà le drapeau d'administration ; l'opération est donc idempotente et peut rester dans la configuration. Les deux variables `EMAIL` et `PASSWORD` vont de pair : n'en définir qu'une seule fait échouer le démarrage. Le mot de passe est haché avec Argon2id avant d'atteindre MariaDB et n'apparaît ni en base ni dans les journaux. Le compte est marqué comme vérifié, puisqu'il est créé par l'exploitant.
 
 Les quatre variables SMTP obligatoires et `COLLECTIONOPS_PUBLIC_URL` doivent être définies ensemble, sinon le démarrage échoue. Le transport impose STARTTLS et un délai de 15 secondes. Sans configuration SMTP, le serveur reste utilisable mais la création d'invitations est indisponible. La réponse `201` signifie que le relais a accepté le message, pas que la boîte destinataire l'a livré. Aucun mot de passe SMTP ne doit être ajouté au dépôt.
+
+Pour Infomaniak, utiliser `COLLECTIONOPS_SMTP_HOST=mail.infomaniak.com`, `COLLECTIONOPS_SMTP_PORT=587` et l'adresse e-mail complète de la boîte comme identifiant SMTP, conformément à la [documentation Infomaniak](https://www.infomaniak.com/fr/support/faq/468/comprendre-les-ports-et-protocoles-de-messagerie). Renseigner le mot de passe uniquement dans l'environnement du serveur, jamais dans Git. Il manque encore l'adresse expéditrice et un domaine HTTPS CollectionOps validés pour réaliser un essai d'invitation de bout en bout ; ne pas définir `COLLECTIONOPS_PUBLIC_URL` avec une adresse fictive.
 
 ## Durées de session
 

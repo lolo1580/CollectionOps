@@ -118,6 +118,38 @@ async fn items_get_consecutive_numbers_starting_at_one() {
 }
 
 #[tokio::test]
+async fn renaming_an_item_requires_the_current_revision() {
+    let Some(fixture) = fixture().await else {
+        return;
+    };
+    let item = fixture
+        .database
+        .create_item(fixture.space_a, "Ancien nom", fixture.owner_id)
+        .await
+        .unwrap();
+
+    let renamed = fixture
+        .database
+        .rename_item(item.id, " Nouveau nom ", item.revision)
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "Nouveau nom");
+    assert_eq!(renamed.revision, item.revision + 1);
+    assert_eq!(renamed.inventory_number, item.inventory_number);
+
+    let stale = fixture
+        .database
+        .rename_item(item.id, "Ecrasement", item.revision)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        stale.inventory_error(),
+        Some(InventoryError::RevisionConflict)
+    );
+    assert_eq!(fixture.database.item(item.id).await.unwrap(), renamed);
+}
+
+#[tokio::test]
 async fn each_space_has_its_own_numbering() {
     let Some(fixture) = fixture().await else {
         return;
