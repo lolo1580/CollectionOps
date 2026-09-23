@@ -106,10 +106,14 @@ public sealed class SessionApi : IDisposable
     public Task<CollectionSpace> CreateSpaceAsync(string name) =>
         SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
 
-    public async Task<IReadOnlyList<InventoryItem>> GetItemsAsync(Guid spaceId)
+    public Task<ItemPageResponse> GetItemsPageAsync(Guid spaceId, string? search = null, string? after = null, int limit = 50)
     {
-        var result = await SendJsonAsync<ItemListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/items");
-        return result.Items;
+        if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
+        var parameters = new List<string> { $"limit={limit}" };
+        if (!string.IsNullOrWhiteSpace(search)) parameters.Add($"q={Uri.EscapeDataString(search.Trim())}");
+        if (!string.IsNullOrEmpty(after)) parameters.Add($"after={Uri.EscapeDataString(after)}");
+        return SendJsonAsync<ItemPageResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/items?{string.Join("&", parameters)}");
     }
 
     public Task<InventoryItem> CreateItemAsync(Guid spaceId, string name) =>
@@ -246,7 +250,9 @@ public sealed record InventoryItem(
     [property: JsonPropertyName("inventory_number")] string InventoryNumber,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("revision")] string Revision);
-public sealed record ItemListResponse([property: JsonPropertyName("items")] List<InventoryItem> Items);
+public sealed record ItemPageResponse(
+    [property: JsonPropertyName("items")] List<InventoryItem> Items,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor);
 public sealed record InventoryTransfer(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("source_space_id")] Guid SourceSpaceId,

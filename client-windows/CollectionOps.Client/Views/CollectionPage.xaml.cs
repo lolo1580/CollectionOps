@@ -11,6 +11,8 @@ public sealed partial class CollectionPage : Page
     private InventoryItem? ActiveItem => Items.SelectedItem as InventoryItem;
     private IReadOnlyList<CollectionSpace> _spaces = [];
     private bool _loadingSpaces;
+    private string _search = string.Empty;
+    private string? _nextCursor;
 
     public CollectionPage()
     {
@@ -24,6 +26,26 @@ public sealed partial class CollectionPage : Page
 
     private async void OnRefreshSpaces(object sender, RoutedEventArgs e) => await RefreshSpacesAsync();
     private async void OnRefreshItems(object sender, RoutedEventArgs e) => await RefreshItemsAsync();
+    private async void OnSearch(object sender, RoutedEventArgs e)
+    {
+        _search = SearchText.Text.Trim();
+        await RefreshItemsAsync();
+    }
+
+    private async void OnLoadMore(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || _nextCursor is not { } cursor) return;
+        var search = _search;
+        await RunAsync(async () =>
+        {
+            var page = await Api.GetItemsPageAsync(space.Id, search, cursor);
+            if (ActiveSpace?.Id != space.Id || _search != search) return;
+            var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
+            items.AddRange(page.Items);
+            Items.ItemsSource = items;
+            _nextCursor = page.NextCursor;
+        });
+    }
     private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSpaces) return;
@@ -57,6 +79,8 @@ public sealed partial class CollectionPage : Page
         await RunAsync(async () =>
         {
             var outcome = await Api.TransferItemAsync(item.Id, destination.Id, item.Revision);
+            _search = string.Empty;
+            SearchText.Text = string.Empty;
             await LoadSpacesAsync(destination.Id);
             Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
                 .FirstOrDefault(candidate => candidate.Id == outcome.Item.Id);
@@ -92,7 +116,7 @@ public sealed partial class CollectionPage : Page
         {
             await Api.CreateItemAsync(spaceId, NewItemName.Text.Trim());
             NewItemName.Text = string.Empty;
-            Items.ItemsSource = await Api.GetItemsAsync(spaceId);
+            await RefreshItemsCoreAsync();
             ShowStatus("Objet ajouté à l'inventaire.", InfoBarSeverity.Success);
         });
     }
@@ -124,9 +148,14 @@ public sealed partial class CollectionPage : Page
 
     private async Task RefreshItemsCoreAsync()
     {
-        Items.ItemsSource = ActiveSpace is { } space
-            ? await Api.GetItemsAsync(space.Id)
-            : null;
+        _nextCursor = null;
+        if (ActiveSpace is { } space)
+        {
+            var page = await Api.GetItemsPageAsync(space.Id, _search);
+            Items.ItemsSource = page.Items;
+            _nextCursor = page.NextCursor;
+        }
+        else Items.ItemsSource = null;
         Items.SelectedItem = null;
         TransferHistory.ItemsSource = null;
     }
@@ -156,6 +185,8 @@ public sealed partial class CollectionPage : Page
         CreateSpaceButton.IsEnabled = false;
         CreateItemButton.IsEnabled = false;
         RefreshItemsButton.IsEnabled = false;
+        SearchButton.IsEnabled = false;
+        LoadMoreButton.IsEnabled = false;
         TransferButton.IsEnabled = false;
         RefreshHistoryButton.IsEnabled = false;
         try { await action(); }
@@ -172,6 +203,8 @@ public sealed partial class CollectionPage : Page
         CreateSpaceButton.IsEnabled = Api.IsSignedIn;
         CreateItemButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null;
         RefreshItemsButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null;
+        SearchButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null;
+        LoadMoreButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _nextCursor is not null;
         TransferButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && DestinationSpaces.ItemsSource is not null;
         RefreshHistoryButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
     }

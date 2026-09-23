@@ -9,7 +9,8 @@ await RejectMalformedJson();
 await ReadCollectionWithSession();
 await TransferUsesExpectedRevision();
 await ReadTransferHistory();
-Console.WriteLine("SessionApi: 7 checks passed.");
+await ReadInventoryPage();
+Console.WriteLine("SessionApi: 8 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -95,6 +96,20 @@ static async Task ReadTransferHistory()
     Assert(handler.LastPath == $"/api/v1/items/{itemId}/transfers", "History route must target the selected item.");
 }
 
+static async Task ReadInventoryPage()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, """{"items":[],"next_cursor":"9"}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var page = await api.GetItemsPageAsync(Guid.Parse("01900000-0000-7000-8000-000000000001"), "Casque 100%", "7", 2);
+    Assert(page.NextCursor == "9", "The next page cursor must parse.");
+    Assert(handler.LastQuery?.Contains("q=Casque%20100%25") == true, "Search text must be URL encoded.");
+    Assert(handler.LastQuery?.Contains("after=7") == true && handler.LastQuery.Contains("limit=2"), "Pagination parameters must be sent.");
+}
+
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
@@ -119,6 +134,7 @@ sealed class FakeHandler : HttpMessageHandler
     private readonly Queue<HttpResponseMessage> _responses = new();
     public string? LastToken { get; private set; }
     public string? LastPath { get; private set; }
+    public string? LastQuery { get; private set; }
     public string? LastBody { get; private set; }
 
     public void Enqueue(HttpStatusCode status, string body) => _responses.Enqueue(new HttpResponseMessage(status)
@@ -132,6 +148,7 @@ sealed class FakeHandler : HttpMessageHandler
             ? values.Single()
             : null;
         LastPath = request.RequestUri?.AbsolutePath;
+        LastQuery = request.RequestUri?.Query;
         LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
         return _responses.Dequeue();
     }

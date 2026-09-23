@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -636,6 +636,14 @@ impl From<Item> for ItemResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ItemListResponse {
     pub items: Vec<ItemResponse>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ListItemsQuery {
+    q: Option<String>,
+    after: Option<String>,
+    limit: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateItemRequest {
@@ -756,13 +764,17 @@ async fn create_space(
 }
 
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/items", tag = "collection",
-    params(("space_id" = Uuid, Path, description = "Espace de collection")),
+    params(("space_id" = Uuid, Path, description = "Espace de collection"),
+        ("q" = Option<String>, Query, description = "Recherche dans le nom"),
+        ("after" = Option<String>, Query, description = "Dernier numero de la page precedente"),
+        ("limit" = Option<u32>, Query, description = "Taille de page, de 1 a 100")),
     responses((status = 200, body = ItemListResponse), (status = 401, body = ProblemDetails),
         (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
 async fn list_items(
     State(state): State<AppState>,
     uri: Uri,
     Path(space_id): Path<Uuid>,
+    Query(query): Query<ListItemsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<ItemListResponse>, ApiError> {
     let database = state
@@ -778,12 +790,50 @@ async fn list_items(
         uri.path(),
     )
     .await?;
-    let items = database
-        .items_in_space(space_id)
+    let limit = query
+        .limit
+        .as_deref()
+        .unwrap_or("50")
+        .parse::<u32>()
+        .ok()
+        .filter(|value| (1..=100).contains(value))
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "La taille de page doit etre entre 1 et 100.",
+                "invalid_limit",
+            )
+        })?;
+    let after = query
+        .after
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<u64>()
+        .map_err(|_| {
+            ApiError::invalid_request(uri.path(), "Curseur invalide.", "invalid_cursor")
+        })?;
+    let search = query.q.as_deref().unwrap_or("").trim();
+    if search.chars().count() > 100 {
+        return Err(ApiError::invalid_request(
+            uri.path(),
+            "La recherche est trop longue.",
+            "invalid_search",
+        ));
+    }
+    let mut items = database
+        .search_items_in_space(space_id, search, after, limit + 1)
         .await
         .map_err(|_| ApiError::internal(uri.path()))?;
+    let has_more = items.len() > limit as usize;
+    items.truncate(limit as usize);
+    let next_cursor = if has_more {
+        items.last().map(|item| item.inventory_number.to_string())
+    } else {
+        None
+    };
     Ok(Json(ItemListResponse {
         items: items.into_iter().map(Into::into).collect(),
+        next_cursor,
     }))
 }
 

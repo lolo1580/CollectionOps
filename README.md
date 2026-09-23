@@ -86,7 +86,7 @@ Chaque espace possède une ligne de compteur (`inventory_counters`) initialisée
 
 Un transfert verrouille l'objet, vérifie la révision présentée par le client, puis réserve le prochain numéro de l'espace de destination et enregistre l'ancien et le nouveau numéro dans l'historique. L'identifiant de l'objet ne change jamais ; en revanche le numéro change, et les anciens numéros ne sont pas réutilisés. Une révision obsolète est refusée sans rien modifier.
 
-La création, la liste par espace, la lecture et le transfert des objets sont reliés à l'API et au client Windows. Le transfert exige l'écriture dans les espaces source et destination et une révision courante ; l'historique exige la lecture de tous les espaces qu'il mentionne.
+La création, la recherche paginée par espace, la lecture et le transfert des objets sont reliés à l'API et au client Windows. Le transfert exige l'écriture dans les espaces source et destination et une révision courante ; l'historique exige la lecture de tous les espaces qu'il mentionne.
 
 ## Routes de session
 
@@ -106,7 +106,7 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter avec un compte existant. Dans **Collection**, créer ou choisir un espace, consulter et ajouter des objets, puis sélectionner un objet pour le transférer et voir son historique. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter avec un compte existant. Dans **Collection**, créer ou choisir un espace, rechercher et parcourir l'inventaire page par page, ajouter des objets, puis en sélectionner un pour le transférer et voir son historique. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur et le thème restent uniquement en mémoire ; la connexion et ces réglages doivent être refaits après redémarrage. HTTPS est requis à distance, tandis que HTTP est autorisé pour un serveur local. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 

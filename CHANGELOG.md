@@ -12,6 +12,8 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Inventaire paginé par numéro (50 objets par défaut, maximum 100) et recherche littérale dans les noms, avec bouton de chargement des pages suivantes dans le client Windows.
+- Tests MariaDB de la pagination, des recherches et des paramètres invalides ; vérification client de l'encodage de recherche et du curseur.
 - Routes HTTP de transfert et d'historique des objets, avec droits sur les deux espaces, conflit de révision et protection des anciens espaces cités par l'historique.
 - Client Windows : transfert de l'objet sélectionné vers un autre espace et affichage de son historique.
 - Test MariaDB du transfert HTTP, des refus d'accès et de l'historique ; vérifications client du contrat de transfert.

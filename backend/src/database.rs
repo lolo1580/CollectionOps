@@ -854,6 +854,38 @@ impl Database {
         Ok(items)
     }
 
+    /// Returns at most `limit` items after an inventory number, optionally matching a name.
+    /// The caller requests one extra row to determine whether another page exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the query or row decoding fails.
+    pub async fn search_items_in_space(
+        &self,
+        space_id: Uuid,
+        search: &str,
+        after_inventory_number: u64,
+        limit: u32,
+    ) -> Result<Vec<Item>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT id, space_id, inventory_number, name, revision, created_by_account_id, created_at \
+             FROM inventory_items \
+             WHERE space_id = ? AND inventory_number > ? \
+               AND (? = '' OR LOCATE(?, name) > 0) \
+             ORDER BY inventory_number LIMIT ?",
+        )
+        .bind(space_id.to_string())
+        .bind(after_inventory_number)
+        .bind(search)
+        .bind(search)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+
+        rows.iter().map(decode_item).collect()
+    }
+
     /// Loads a space membership together with the account's explicit grants.
     ///
     /// Returns `Ok(None)` when the account is not a member. The caller must treat a missing
@@ -1201,15 +1233,19 @@ where
     .map_err(DatabaseError::Query)?
     .ok_or(DatabaseError::Inventory(InventoryError::ItemNotFound))?;
 
+    decode_item(&row)
+}
+
+fn decode_item(row: &sqlx::mysql::MySqlRow) -> Result<Item, DatabaseError> {
     Ok(Item {
-        id: parse_uuid(&decode_text(&row, "id")?)?,
-        space_id: parse_uuid(&decode_text(&row, "space_id")?)?,
+        id: parse_uuid(&decode_text(row, "id")?)?,
+        space_id: parse_uuid(&decode_text(row, "space_id")?)?,
         inventory_number: row
             .try_get("inventory_number")
             .map_err(DatabaseError::Query)?,
         name: row.try_get("name").map_err(DatabaseError::Query)?,
         revision: row.try_get("revision").map_err(DatabaseError::Query)?,
-        created_by_account_id: parse_uuid(&decode_text(&row, "created_by_account_id")?)?,
+        created_by_account_id: parse_uuid(&decode_text(row, "created_by_account_id")?)?,
         created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
     })
 }

@@ -24,6 +24,10 @@
                 <Button x:Name="CreateItemButton" Content="Ajouter à l'inventaire" Click="OnCreateItem" />
                 <Button x:Name="RefreshItemsButton" Content="Actualiser" Click="OnRefreshItems" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="SearchText" PlaceholderText="Rechercher dans le nom" Width="280" />
+                <Button x:Name="SearchButton" Content="Rechercher" Click="OnSearch" />
+            </StackPanel>
             <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="services:InventoryItem">
@@ -34,6 +38,7 @@
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+            <Button x:Name="LoadMoreButton" Content="Charger la suite" Click="OnLoadMore" HorizontalAlignment="Left" />
 
             <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="SelectedItemName" Text="Sélectionnez un objet dans l'inventaire." TextWrapping="Wrap" />
