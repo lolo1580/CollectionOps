@@ -18,7 +18,10 @@ await AcceptExistingAccountInvitationWithSession();
 await RejectInvitationForDifferentServer();
 await AdminCanListSpacesWithoutInventoryAccess();
 await MemberGrantUpdateSendsExplicitRights();
-Console.WriteLine("SessionApi: 16 checks passed.");
+await ReadNestedCategories();
+await AssignCategoriesAndWriteInheritedField();
+await TransferWithDestinationCategories();
+Console.WriteLine("SessionApi: 19 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -102,6 +105,65 @@ static async Task ReadTransferHistory()
     var history = await api.GetItemTransfersAsync(itemId);
     Assert(history.Count == 1 && history[0].SourceInventoryNumber == "1", "History must parse transfer numbers.");
     Assert(handler.LastPath == $"/api/v1/items/{itemId}/transfers", "History route must target the selected item.");
+}
+
+static async Task ReadNestedCategories()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var parentId = Guid.NewGuid();
+    var childId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"categories\":[{{\"id\":\"{parentId}\",\"space_id\":\"{spaceId}\",\"parent_id\":null,\"name\":\"Armes\"}},{{\"id\":\"{childId}\",\"space_id\":\"{spaceId}\",\"parent_id\":\"{parentId}\",\"name\":\"Casques\"}}]}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var categories = await api.GetCategoriesAsync(spaceId);
+    Assert(categories.Count == 2 && categories[1].ParentId == parentId,
+        "Nested categories must preserve parent IDs.");
+    Assert(handler.LastPath == $"/api/v1/spaces/{spaceId}/categories", "Category route must target the space.");
+}
+
+static async Task AssignCategoriesAndWriteInheritedField()
+{
+    var handler = new FakeHandler();
+    var itemId = Guid.NewGuid();
+    var categoryId = Guid.NewGuid();
+    var fieldId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"revision\":\"2\",\"categories\":[{{\"category_id\":\"{categoryId}\",\"category_name\":\"Casques\"}}]}}");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"revision\":\"3\",\"fields\":[{{\"id\":\"{fieldId}\",\"defined_category_name\":\"Armes\",\"name\":\"Date\",\"value_type\":\"date\",\"value\":\"1944-06-06\"}}]}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var assigned = await api.AddItemCategoriesAsync(itemId, [categoryId], "1");
+    Assert(assigned.Categories.Single().CategoryId == categoryId &&
+        handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true,
+        "Category assignment must send the chosen category and revision.");
+    var fields = await api.SetItemFieldValueAsync(itemId, fieldId, "1944-06-06", "2");
+    Assert(fields.Fields.Single().DefinedCategoryName == "Armes" &&
+        handler.LastBody?.Contains("\"value\":\"1944-06-06\"") == true,
+        "An inherited field value must round-trip through the client contract.");
+}
+
+static async Task TransferWithDestinationCategories()
+{
+    var handler = new FakeHandler();
+    var itemId = Guid.NewGuid();
+    var destinationId = Guid.NewGuid();
+    var categoryId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"item\":{{\"id\":\"{itemId}\",\"space_id\":\"{destinationId}\",\"inventory_number\":\"2\",\"name\":\"Objet\",\"revision\":\"2\"}},\"transfer\":{{\"id\":\"{Guid.NewGuid()}\",\"source_space_id\":\"{Guid.NewGuid()}\",\"destination_space_id\":\"{destinationId}\",\"source_inventory_number\":\"1\",\"destination_inventory_number\":\"2\",\"transferred_at\":\"2026-09-23T10:00:00Z\"}}}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    await api.TransferItemAsync(itemId, destinationId, "1", [categoryId]);
+    Assert(handler.LastBody?.Contains($"\"destination_category_ids\":[\"{categoryId}\"]") == true,
+        "Transfer must send explicit destination classification.");
 }
 
 static async Task ReadStateAuditHistory()

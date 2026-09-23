@@ -18,6 +18,26 @@
             <ComboBox x:Name="Spaces" Header="Espace actif" Width="400" HorizontalAlignment="Left"
                       DisplayMemberPath="Name" SelectionChanged="OnSpaceSelected" />
 
+            <TextBlock Text="Catégories et champs" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Les catégories peuvent être imbriquées. Un champ défini sur une catégorie parente est hérité par ses sous-catégories." TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="NewCategoryName" PlaceholderText="Nom de la catégorie" Width="250" />
+                <ComboBox x:Name="ParentCategories" Header="Parent" Width="270" DisplayMemberPath="Label" />
+                <Button x:Name="CreateCategoryButton" Content="Créer" Click="OnCreateCategory" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <ComboBox x:Name="FieldCategory" Header="Catégorie pour définir un champ" Width="400"
+                      DisplayMemberPath="Label" SelectionChanged="OnFieldCategorySelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="NewFieldName" PlaceholderText="Nom du champ" Width="240" />
+                <ComboBox x:Name="NewFieldType" Header="Type" Width="140" SelectedIndex="0">
+                    <ComboBoxItem Content="Texte" Tag="text" />
+                    <ComboBoxItem Content="Nombre" Tag="number" />
+                    <ComboBoxItem Content="Date" Tag="date" />
+                </ComboBox>
+                <Button x:Name="CreateFieldButton" Content="Créer le champ" Click="OnCreateField" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <ListView x:Name="CategoryFields" SelectionMode="None" Height="100" DisplayMemberPath="Label" />
+
             <StackPanel x:Name="SharingPanel" Spacing="8" Visibility="Collapsed">
                 <TextBlock Text="Partager cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
                 <TextBlock Text="Seul le propriétaire peut inviter. La lecture de la collection est présélectionnée ; aucun droit financier n'est accordé par défaut. Un nouvel envoi à la même adresse invalide le précédent lien." TextWrapping="Wrap" />
@@ -117,9 +137,19 @@
                 <Button x:Name="TrashItemButton" Content="Mettre à la corbeille" Click="OnTrashItem" />
                 <Button x:Name="RestoreItemButton" Content="Restaurer" Click="OnRestoreItem" />
             </StackPanel>
+            <TextBlock Text="Classement et champs de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock x:Name="AssignedCategories" Text="Aucune catégorie." TextWrapping="Wrap" />
+            <TextBlock Text="Choisissez une ou plusieurs catégories à ajouter à cet objet (ajout uniquement pour l'instant)." TextWrapping="Wrap" />
+            <ListView x:Name="ItemCategoryChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
+            <Button x:Name="AddItemCategoriesButton" Content="Ajouter les catégories choisies" Click="OnAddItemCategories" HorizontalAlignment="Left" />
+            <ListView x:Name="EffectiveFields" Height="140" DisplayMemberPath="Label" SelectionChanged="OnEffectiveFieldSelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="FieldValue" Header="Valeur du champ sélectionné" Width="350" />
+                <Button x:Name="SaveFieldValueButton" Content="Enregistrer" Click="OnSaveFieldValue" VerticalAlignment="Bottom" />
+            </StackPanel>
             <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">
-                <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" />
+                <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" SelectionChanged="OnDestinationSelected" />
                 <Button x:Name="TransferButton" Content="Transférer l'objet" Click="OnTransferItem" VerticalAlignment="Bottom" />
                 <Button x:Name="RefreshHistoryButton" Content="Actualiser l'historique" Click="OnRefreshHistory" VerticalAlignment="Bottom" />
             </StackPanel>
@@ -148,6 +178,8 @@
                     </ListView.ItemTemplate>
                 </ListView>
             </StackPanel>
+            <TextBlock Text="Pour un objet déjà classé, choisissez au moins une catégorie de l'espace de destination avant le transfert." TextWrapping="Wrap" />
+            <ListView x:Name="DestinationCategoryChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
         </StackPanel>
     </ScrollViewer>
 </Page>

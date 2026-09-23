@@ -40,6 +40,8 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 | F06 | Un utilisateur autorisé crée, consulte, modifie et archive un objet de collection. | L'objet conserve un identifiant stable ; l'archivage ne le supprime pas de l'historique. |
 | F07 | Les objets peuvent être organisés par catégories, séries, regroupements et emplacements. | Une recherche ou un filtre retrouve les objets selon ces relations, sans modifier leur identité. |
 | F08 | Les fiches acceptent des champs adaptés à la collection et des références historiques ou techniques. | Les valeurs saisies sont restituées après sauvegarde et restent associées au bon objet. |
+| F08a | Les catégories sont propres à un espace, imbriquées et multiples par objet ; leurs champs texte, nombre et date sont hérités par les sous-catégories. | Un champ d'ancêtre apparaît une seule fois même si l'objet est classé dans plusieurs branches ; les catégories d'un autre espace sont refusées. |
+| F08b | Un transfert d'objet déjà classé exige le choix explicite de catégories de destination. | Un transfert sans choix est refusé ; les anciennes valeurs restent historiques sans être révélées dans l'espace de destination. |
 | F09 | Les transferts d'emplacement sont traçables. | L'emplacement courant et les transferts passés peuvent être consultés par un utilisateur autorisé. |
 | F10 | Les suppressions suivent une corbeille et une politique de restauration. | Un élément supprimé n'apparaît plus dans la vue courante ; sa restauration, si autorisée, restitue ses relations conservées. |
 

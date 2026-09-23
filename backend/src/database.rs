@@ -176,6 +176,10 @@ pub enum InventoryError {
     InvalidState,
     /// The requested state transition is not allowed from the current state.
     InvalidTransition,
+    /// Categorized items require an explicit destination classification on transfer.
+    DestinationCategoriesRequired,
+    /// A selected destination category does not belong to the destination space.
+    InvalidDestinationCategory,
 }
 
 /// A space and its current owner.
@@ -851,6 +855,31 @@ impl Database {
         expected_revision: u64,
         actor_account_id: Uuid,
     ) -> Result<TransferOutcome, DatabaseError> {
+        self.transfer_item_with_categories(
+            item_id,
+            destination_space_id,
+            expected_revision,
+            actor_account_id,
+            &[],
+        )
+        .await
+    }
+
+    /// Transfers an item and explicitly classifies it in the destination space in the same
+    /// transaction. Old assignments and values remain as historical records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an inventory or storage error; categorized source items cannot be transferred
+    /// without at least one valid destination category.
+    pub async fn transfer_item_with_categories(
+        &self,
+        item_id: Uuid,
+        destination_space_id: Uuid,
+        expected_revision: u64,
+        actor_account_id: Uuid,
+        destination_category_ids: &[Uuid],
+    ) -> Result<TransferOutcome, DatabaseError> {
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
 
         let row = sqlx::query(
@@ -896,6 +925,15 @@ impl Database {
             transaction.rollback().await.map_err(DatabaseError::Query)?;
             return Err(DatabaseError::Inventory(InventoryError::CounterMissing));
         };
+
+        crate::taxonomy::apply_transfer_categories(
+            &mut transaction,
+            item_id,
+            source_space_id,
+            destination_space_id,
+            destination_category_ids,
+        )
+        .await?;
 
         sqlx::query(
             "UPDATE inventory_counters SET next_number = next_number + 1 WHERE space_id = ?",

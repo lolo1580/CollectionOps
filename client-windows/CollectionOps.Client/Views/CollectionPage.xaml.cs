@@ -17,6 +17,8 @@ public sealed partial class CollectionPage : Page
     private string _stateFilter = "active";
     private string? _nextCursor;
     private bool _canReadActiveSpace;
+    private IReadOnlyList<CollectionCategory> _categories = [];
+    private int _assignedCategoryCount;
 
     public CollectionPage()
     {
@@ -66,6 +68,7 @@ public sealed partial class CollectionPage : Page
             UpdateDestinationOptions();
             TransferHistory.ItemsSource = null;
             await RefreshMembersCoreAsync();
+            await RefreshCategoriesCoreAsync();
             await RefreshItemsCoreAsync();
             await RefreshInvitationsCoreAsync();
         });
@@ -82,12 +85,16 @@ public sealed partial class CollectionPage : Page
         EditedItemName.Text = ActiveItem?.Name ?? string.Empty;
         TransferHistory.ItemsSource = null;
         StateAuditHistory.ItemsSource = null;
+        AssignedCategories.Text = "Aucune catégorie.";
+        EffectiveFields.ItemsSource = null;
+        _assignedCategoryCount = 0;
         StateAuditPanel.Visibility = ActiveItem is not null && CanReadStateAudit
             ? Visibility.Visible : Visibility.Collapsed;
         UpdateButtons();
         if (ActiveItem is not null)
         {
             await RefreshHistoryAsync();
+            await RefreshItemTaxonomyAsync();
             if (CanReadStateAudit) await RefreshStateAuditAsync();
         }
     }
@@ -164,9 +171,16 @@ public sealed partial class CollectionPage : Page
             ShowStatus("Sélectionnez un objet et un espace de destination.", InfoBarSeverity.Warning);
             return;
         }
+        var selectedCategories = DestinationCategoryChoices.SelectedItems.Cast<CategoryOption>()
+            .Where(option => option.Id.HasValue).Select(option => option.Id!.Value).ToList();
+        if (_assignedCategoryCount > 0 && selectedCategories.Count == 0)
+        {
+            ShowStatus("Choisissez au moins une catégorie dans l'espace de destination.", InfoBarSeverity.Warning);
+            return;
+        }
         await RunAsync(async () =>
         {
-            var outcome = await Api.TransferItemAsync(item.Id, destination.Id, item.Revision);
+            var outcome = await Api.TransferItemAsync(item.Id, destination.Id, item.Revision, selectedCategories);
             _search = string.Empty;
             SearchText.Text = string.Empty;
             await LoadSpacesAsync(destination.Id);
@@ -349,6 +363,7 @@ public sealed partial class CollectionPage : Page
         UpdateDestinationOptions();
         TransferHistory.ItemsSource = null;
         await RefreshMembersCoreAsync();
+        await RefreshCategoriesCoreAsync();
         if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
@@ -401,6 +416,141 @@ public sealed partial class CollectionPage : Page
     {
         DestinationSpaces.ItemsSource = _spaces.Where(space => space.Id != ActiveSpace?.Id).ToList();
         DestinationSpaces.SelectedIndex = -1;
+        DestinationCategoryChoices.ItemsSource = null;
+    }
+
+    private static List<CategoryOption> CategoryOptions(IReadOnlyList<CollectionCategory> categories)
+    {
+        var byId = categories.ToDictionary(category => category.Id);
+        string Label(CollectionCategory category)
+        {
+            var names = new List<string> { category.Name };
+            var seen = new HashSet<Guid> { category.Id };
+            var parent = category.ParentId;
+            while (parent is { } id && seen.Add(id) && byId.TryGetValue(id, out var ancestor))
+            {
+                names.Insert(0, ancestor.Name);
+                parent = ancestor.ParentId;
+            }
+            return string.Join(" / ", names);
+        }
+        return categories.Select(category => new CategoryOption(category.Id, Label(category)))
+            .OrderBy(option => option.Label, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    private async Task RefreshCategoriesCoreAsync()
+    {
+        _categories = ActiveSpace is { } space && _canReadActiveSpace
+            ? await Api.GetCategoriesAsync(space.Id) : [];
+        var options = CategoryOptions(_categories);
+        ParentCategories.ItemsSource = new[] { new CategoryOption(null, "Aucune — catégorie racine") }
+            .Concat(options).ToList();
+        ParentCategories.SelectedIndex = 0;
+        FieldCategory.ItemsSource = options;
+        ItemCategoryChoices.ItemsSource = options;
+        CategoryFields.ItemsSource = null;
+    }
+
+    private async void OnCreateCategory(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || string.IsNullOrWhiteSpace(NewCategoryName.Text)) return;
+        var parentId = (ParentCategories.SelectedItem as CategoryOption)?.Id;
+        await RunAsync(async () =>
+        {
+            await Api.CreateCategoryAsync(space.Id, NewCategoryName.Text.Trim(), parentId);
+            NewCategoryName.Text = string.Empty;
+            await RefreshCategoriesCoreAsync();
+            ShowStatus("Catégorie créée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnFieldCategorySelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || FieldCategory.SelectedItem is not CategoryOption { Id: { } id }) return;
+        await RunAsync(async () => CategoryFields.ItemsSource = await Api.GetCategoryFieldsAsync(space.Id, id));
+    }
+
+    private async void OnCreateField(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || FieldCategory.SelectedItem is not CategoryOption { Id: { } id } ||
+            string.IsNullOrWhiteSpace(NewFieldName.Text)) return;
+        var type = (NewFieldType.SelectedItem as ComboBoxItem)?.Tag as string ?? "text";
+        await RunAsync(async () =>
+        {
+            await Api.CreateCategoryFieldAsync(space.Id, id, NewFieldName.Text.Trim(), type);
+            NewFieldName.Text = string.Empty;
+            CategoryFields.ItemsSource = await Api.GetCategoryFieldsAsync(space.Id, id);
+            ShowStatus("Champ créé et hérité par les sous-catégories.", InfoBarSeverity.Success);
+        });
+    }
+
+    private Task RefreshItemTaxonomyAsync() => RunAsync(RefreshItemTaxonomyCoreAsync);
+
+    private async Task RefreshItemTaxonomyCoreAsync()
+    {
+        if (ActiveItem is not { } item) return;
+        var categories = await Api.GetItemCategoriesAsync(item.Id);
+        var fields = await Api.GetItemFieldsAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        _assignedCategoryCount = categories.Categories.Count;
+        AssignedCategories.Text = _assignedCategoryCount == 0 ? "Aucune catégorie." :
+            "Catégories : " + string.Join(", ", categories.Categories.Select(category => category.CategoryName));
+        EffectiveFields.ItemsSource = fields.Fields;
+        ItemCategoryChoices.SelectedItems.Clear();
+    }
+
+    private async void OnAddItemCategories(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item) return;
+        var ids = ItemCategoryChoices.SelectedItems.Cast<CategoryOption>()
+            .Where(option => option.Id.HasValue).Select(option => option.Id!.Value).ToList();
+        if (ids.Count == 0) { ShowStatus("Choisissez une catégorie.", InfoBarSeverity.Warning); return; }
+        await RunAsync(async () =>
+        {
+            await Api.AddItemCategoriesAsync(item.Id, ids, item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == item.Id);
+            ShowStatus("Catégories ajoutées.", InfoBarSeverity.Success);
+        });
+    }
+
+    private void OnEffectiveFieldSelected(object sender, SelectionChangedEventArgs e)
+    {
+        var field = EffectiveFields.SelectedItem as EffectiveItemField;
+        FieldValue.Text = field?.Value ?? string.Empty;
+        FieldValue.PlaceholderText = field?.ValueType switch
+        {
+            "date" => "AAAA-MM-JJ",
+            "number" => "Nombre décimal (point)",
+            _ => "Texte",
+        };
+        UpdateButtons();
+    }
+
+    private async void OnSaveFieldValue(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item || EffectiveFields.SelectedItem is not EffectiveItemField field) return;
+        await RunAsync(async () =>
+        {
+            await Api.SetItemFieldValueAsync(item.Id, field.Id, FieldValue.Text.Trim(), item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == item.Id);
+            ShowStatus("Valeur du champ enregistrée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnDestinationSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (DestinationSpaces.SelectedItem is not CollectionSpace destination)
+        { DestinationCategoryChoices.ItemsSource = null; return; }
+        await RunAsync(async () =>
+        {
+            var categories = await Api.GetCategoriesAsync(destination.Id);
+            if ((DestinationSpaces.SelectedItem as CollectionSpace)?.Id == destination.Id)
+                DestinationCategoryChoices.ItemsSource = CategoryOptions(categories);
+        });
     }
 
     private async Task RunAsync(Func<Task> action)
@@ -423,6 +573,10 @@ public sealed partial class CollectionPage : Page
         SaveMemberRightsButton.IsEnabled = false;
         RemoveMemberButton.IsEnabled = false;
         RefreshMembersButton.IsEnabled = false;
+        CreateCategoryButton.IsEnabled = false;
+        CreateFieldButton.IsEnabled = false;
+        AddItemCategoriesButton.IsEnabled = false;
+        SaveFieldValueButton.IsEnabled = false;
         try { await action(); }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
@@ -455,6 +609,10 @@ public sealed partial class CollectionPage : Page
         SaveMemberRightsButton.IsEnabled = canChangeMember;
         RemoveMemberButton.IsEnabled = canChangeMember &&
             (Members.SelectedItem as SpaceMember)?.AccountId != ActiveSpace?.OwnerAccountId;
+        CreateCategoryButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
+        CreateFieldButton.IsEnabled = CreateCategoryButton.IsEnabled && FieldCategory.SelectedItem is CategoryOption { Id: not null };
+        AddItemCategoriesButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        SaveFieldValueButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && EffectiveFields.SelectedItem is not null;
     }
 
     private void ShowStatus(string message, InfoBarSeverity severity)

@@ -88,6 +88,12 @@ Un transfert verrouille l'objet, vérifie la révision présentée par le client
 
 La création, la recherche paginée par espace, la lecture et le transfert des objets sont reliés à l'API et au client Windows. Le transfert exige l'écriture dans les espaces source et destination et une révision courante ; l'historique exige la lecture de tous les espaces qu'il mentionne.
 
+## Catégories et champs personnalisés
+
+Chaque espace possède ses propres catégories, éventuellement imbriquées. Un objet peut être classé dans plusieurs catégories (20 au maximum). Les champs `text`, `number` et `date` sont définis sur une catégorie ; les sous-catégories héritent des champs de leurs ancêtres, et un champ commun à deux branches n'apparaît qu'une fois dans la fiche. Le classement est actuellement additif : le retrait ou la réorganisation de catégories existantes n'est pas encore disponible. Toutes les écritures sur l'objet exigent sa révision courante ; la corbeille reste en lecture seule.
+
+Lorsqu'un objet classé change d'espace, il faut choisir explicitement une ou plusieurs catégories de destination. Le classement et les valeurs de l'ancien espace restent en base pour l'historique mais ne sont pas affichés dans le nouvel espace ; aucune valeur n'est copiée implicitement. Un objet non classé peut toujours être transféré sans catégorie. Le client Windows permet de créer les catégories, de définir leurs champs, de classer un objet, d'enregistrer ses valeurs et de choisir le classement à destination.
+
 ## Archivage et corbeille
 
 Un objet possède un état `active`, `archived` ou `trashed`. L'archivage et la mise à la corbeille sont réversibles, et aucune suppression physique n'est exposée en V1. Les routes `POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent l'écriture dans l'espace courant et la révision lue par le client. Une transition non autorisée reçoit `422`, une révision obsolète `409` sans rien modifier. Chaque transition incrémente la révision et ajoute un événement d'audit avec l'auteur et l'état avant/après. Un objet en corbeille est en lecture seule jusqu'à sa restauration. L'identifiant stable, le numéro d'inventaire et l'historique des transferts survivent à toutes les transitions, et les numéros ne sont jamais réutilisés.
@@ -125,7 +131,7 @@ Le destinataire avec un compte existant doit se connecter avec l'adresse e-mail 
 
 Le lien `collectionops://invite/...?...` se colle dans **Compte → Accepter une invitation** du client Windows. Il n'est pas encore associé automatiquement au protocole Windows ; le collage est nécessaire. Le lien contient l'adresse HTTPS du serveur configurée par l'exploitant, et le client refuse de transmettre le jeton si son adresse de serveur ne correspond pas. Le jeton n'est jamais placé dans une URL HTTP.
 
-La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. Les autres champs de fiche restent à concevoir. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
+La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}` avec `name` et `expected_revision`, ainsi que les catégories et leurs champs personnalisés. Une révision dépassée renvoie `409` et n'écrase pas la modification plus récente. La description et les emplacements restent à concevoir. Un [brouillon de synchronisation hors ligne](docs/architecture/offline-sync-v1-draft.md) fixe les invariants et les questions à trancher ; le mode hors ligne n'est pas activé.
 
 ## Démarrer le client Windows
 

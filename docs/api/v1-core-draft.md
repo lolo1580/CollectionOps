@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration et transferts d'objets sont exposées ; la synchronisation reste à définir.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration, catégories, champs personnalisés et transferts d'objets sont exposées ; la synchronisation reste à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -38,7 +38,15 @@ Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou d
 
 ## Renommer un objet
 
-`PATCH /api/v1/items/{item_id}` exige `collections_write` dans l'espace courant. Le corps contient `{"name":"Nouveau nom","expected_revision":"1"}`. Le nom est nettoyé et limité à 255 caractères comme à la création. La transaction verrouille l'objet, refuse une révision obsolète avec `409`, modifie le nom et incrémente la révision. Le numéro d'inventaire et l'identifiant stable ne changent pas. Cette première fiche éditable n'ajoute pas encore de description, catégories, emplacements ou champs personnalisés.
+`PATCH /api/v1/items/{item_id}` exige `collections_write` dans l'espace courant. Le corps contient `{"name":"Nouveau nom","expected_revision":"1"}`. Le nom est nettoyé et limité à 255 caractères comme à la création. La transaction verrouille l'objet, refuse une révision obsolète avec `409`, modifie le nom et incrémente la révision. Le numéro d'inventaire et l'identifiant stable ne changent pas. La description et les emplacements restent à définir.
+
+## Catégories et champs de fiche
+
+`GET` et `POST /api/v1/spaces/{space_id}/categories` listent et créent les catégories d'un espace. La création accepte `{"name":"Casques","parent_id":"<id facultatif>"}` ; le parent doit appartenir au même espace. Les noms sont uniques parmi les enfants d'un même parent. `GET` et `POST /api/v1/spaces/{space_id}/categories/{category_id}/fields` listent et créent les champs directs (`name`, `value_type` : `text`, `number` ou `date`). Un enfant hérite des champs de tous ses ancêtres.
+
+`GET /api/v1/items/{item_id}/categories` retourne `revision` et les catégories actuelles. `POST` sur la même route ajoute `{"category_ids":["<id>"],"expected_revision":"1"}` ; la sélection n'enlève aucune catégorie existante, ne peut dépasser 20 catégories et doit provenir de l'espace courant. `GET /api/v1/items/{item_id}/fields` retourne les champs effectifs (hérités compris), dédupliqués par identifiant de champ. `PUT /api/v1/items/{item_id}/fields/{field_id}` accepte `{"value":"1944-06-06","expected_revision":"2"}`. Les valeurs sont validées selon leur type ; les dates suivent `AAAA-MM-JJ`. La lecture exige `collections_read`, l'écriture `collections_write` ; une révision obsolète reçoit `409`, un objet en corbeille refuse l'écriture.
+
+Le retrait de catégories, la modification ou la suppression de définitions ne sont pas encore exposés.
 
 ## Archiver, mettre à la corbeille, restaurer
 
@@ -59,10 +67,10 @@ L'identifiant stable, le numéro d'inventaire et l'historique des transferts son
 `POST /api/v1/items/{item_id}/transfers` exige `collections_write` dans l'espace source et dans l'espace de destination. Le corps indique la destination et la révision lue par le client :
 
 ```json
-{"destination_space_id":"0189a4c2-7f00-7000-8000-000000000003","expected_revision":"1"}
+{"destination_space_id":"0189a4c2-7f00-7000-8000-000000000003","destination_category_ids":["0189a4c2-7f00-7000-8000-000000000005"],"expected_revision":"1"}
 ```
 
-Le backend vérifie d'abord les droits dans les deux espaces. La transaction verrouille ensuite l'objet, vérifie sa révision et son espace courant, réserve le prochain numéro de destination, augmente la révision, puis inscrit l'historique du transfert. Une destination identique à la source reçoit `422`. Une révision obsolète reçoit `409` et n'est jamais silencieusement remplacée. La réponse `200` contient l'objet mis à jour et le transfert :
+Le backend vérifie d'abord les droits dans les deux espaces. La transaction verrouille ensuite l'objet, vérifie sa révision et son espace courant, réserve le prochain numéro de destination, augmente la révision, puis inscrit l'historique du transfert. Pour un objet déjà classé, `destination_category_ids` est obligatoire et doit contenir au moins une catégorie de destination valide ; le classement et les valeurs de l'ancien espace restent historiques et ne sont pas exposés dans le nouvel espace. Pour un objet non classé, la sélection peut être vide. Une destination identique à la source reçoit `422`. Une révision obsolète reçoit `409` et n'est jamais silencieusement remplacée. La réponse `200` contient l'objet mis à jour et le transfert :
 
 ```json
 {

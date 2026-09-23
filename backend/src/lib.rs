@@ -5,6 +5,7 @@ mod http;
 mod invitations;
 mod mail;
 mod security;
+mod taxonomy;
 pub mod testing;
 
 pub use config::{AppConfig, BootstrapAdmin, ConfigError};
@@ -27,4 +28,7 @@ pub use mail::{MailConfigError, SmtpDelivery};
 pub use security::{
     AuthorizationError, Permission, Principal, SpaceAuthorizationError, SpaceMembership,
     SpaceOwnership,
+};
+pub use taxonomy::{
+    Category, CategoryField, EffectiveField, FieldType, ItemCategory, TaxonomyError,
 };

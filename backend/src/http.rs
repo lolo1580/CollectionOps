@@ -28,6 +28,7 @@ use crate::{
     invitations::{Invitation, InvitationError},
     mail::SmtpDelivery,
     security::{Permission, Principal},
+    taxonomy::{Category, CategoryField, EffectiveField, FieldType, ItemCategory, TaxonomyError},
 };
 
 pub const API_PREFIX: &str = "/api/v1";
@@ -170,6 +171,21 @@ impl ApiError {
                     .to_owned(),
                 instance: instance.to_owned(),
                 code: "revision_conflict",
+            },
+        }
+    }
+
+    fn conflict(instance: &str, detail: &str, code: &'static str) -> Self {
+        let status = StatusCode::CONFLICT;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Conflit",
+                status: status.as_u16(),
+                detail: detail.to_owned(),
+                instance: instance.to_owned(),
+                code,
             },
         }
     }
@@ -641,6 +657,174 @@ impl From<Space> for SpaceResponse {
 pub struct SpaceListResponse {
     pub spaces: Vec<SpaceResponse>,
 }
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryResponse {
+    pub id: Uuid,
+    pub space_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+    pub created_at: String,
+}
+
+impl From<Category> for CategoryResponse {
+    fn from(value: Category) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            parent_id: value.parent_id,
+            name: value.name,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryListResponse {
+    pub categories: Vec<CategoryResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateCategoryRequest {
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryFieldResponse {
+    pub id: Uuid,
+    pub category_id: Uuid,
+    pub name: String,
+    pub value_type: String,
+    pub created_at: String,
+}
+
+impl From<CategoryField> for CategoryFieldResponse {
+    fn from(value: CategoryField) -> Self {
+        Self {
+            id: value.id,
+            category_id: value.category_id,
+            name: value.name,
+            value_type: value.value_type.as_str().to_owned(),
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryFieldListResponse {
+    pub fields: Vec<CategoryFieldResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateCategoryFieldRequest {
+    pub name: String,
+    pub value_type: String,
+}
+
+fn taxonomy_error(error: &TaxonomyError, instance: &str) -> ApiError {
+    match error {
+        TaxonomyError::InvalidName | TaxonomyError::InvalidFieldType => ApiError::invalid_request(
+            instance,
+            "Nom ou type de champ invalide.",
+            "invalid_taxonomy",
+        ),
+        TaxonomyError::SpaceNotFound
+        | TaxonomyError::ParentNotFound
+        | TaxonomyError::CategoryNotFound
+        | TaxonomyError::ItemNotFound
+        | TaxonomyError::InvalidCategory
+        | TaxonomyError::FieldNotAvailable => ApiError::resource_not_found(instance),
+        TaxonomyError::DuplicateName => {
+            ApiError::conflict(instance, "Ce nom existe deja ici.", "duplicate_name")
+        }
+        TaxonomyError::RevisionConflict => ApiError::revision_conflict(instance),
+        TaxonomyError::ItemInTrash => ApiError::invalid_request(
+            instance,
+            "Restaurez l'objet avant de modifier sa fiche.",
+            "invalid_state",
+        ),
+        TaxonomyError::EmptySelection | TaxonomyError::TooManyCategories => {
+            ApiError::invalid_request(
+                instance,
+                "Choisissez entre 1 et 20 categories.",
+                "invalid_categories",
+            )
+        }
+        TaxonomyError::InvalidValue => ApiError::invalid_request(
+            instance,
+            "Valeur incompatible avec le type du champ.",
+            "invalid_field_value",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemCategoryResponse {
+    pub assignment_id: Uuid,
+    pub category_id: Uuid,
+    pub category_name: String,
+    pub assigned_at: String,
+}
+
+impl From<ItemCategory> for ItemCategoryResponse {
+    fn from(value: ItemCategory) -> Self {
+        Self {
+            assignment_id: value.assignment_id,
+            category_id: value.category_id,
+            category_name: value.category_name,
+            assigned_at: value.assigned_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemCategoryListResponse {
+    pub revision: String,
+    pub categories: Vec<ItemCategoryResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AddItemCategoriesRequest {
+    pub category_ids: Vec<Uuid>,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EffectiveFieldResponse {
+    pub id: Uuid,
+    pub defined_category_id: Uuid,
+    pub defined_category_name: String,
+    pub name: String,
+    pub value_type: String,
+    pub value: Option<String>,
+}
+
+impl From<EffectiveField> for EffectiveFieldResponse {
+    fn from(value: EffectiveField) -> Self {
+        Self {
+            id: value.id,
+            defined_category_id: value.defined_category_id,
+            defined_category_name: value.defined_category_name,
+            name: value.name,
+            value_type: value.value_type.as_str().to_owned(),
+            value: value.value,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EffectiveFieldListResponse {
+    pub revision: String,
+    pub fields: Vec<EffectiveFieldResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SetItemFieldValueRequest {
+    pub value: String,
+    pub expected_revision: String,
+}
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateSpaceRequest {
     pub name: String,
@@ -1075,6 +1259,7 @@ pub struct RenameItemRequest {
 pub struct TransferItemRequest {
     pub destination_space_id: Uuid,
     pub expected_revision: String,
+    pub destination_category_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1238,6 +1423,311 @@ async fn create_space(
             _ => ApiError::internal(uri.path()),
         })?;
     Ok((StatusCode::CREATED, Json(space.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/categories", tag = "collection",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = CategoryListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_categories(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<CategoryListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let categories = db
+        .categories_in_space(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(CategoryListResponse {
+        categories: categories.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/categories", tag = "collection", request_body = CreateCategoryRequest,
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 201, body = CategoryResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn create_category(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCategoryRequest>,
+) -> Result<(StatusCode, Json<CategoryResponse>), ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let category = db
+        .create_category(space_id, payload.parent_id, &payload.name)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(category.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/categories/{category_id}/fields", tag = "collection",
+    params(("space_id" = Uuid, Path, description = "Espace"), ("category_id" = Uuid, Path, description = "Categorie")),
+    responses((status = 200, body = CategoryFieldListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_category_fields(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, category_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<CategoryFieldListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let fields = db
+        .category_fields(space_id, category_id)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    Ok(Json(CategoryFieldListResponse {
+        fields: fields.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/categories/{category_id}/fields", tag = "collection", request_body = CreateCategoryFieldRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"), ("category_id" = Uuid, Path, description = "Categorie")),
+    responses((status = 201, body = CategoryFieldResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn create_category_field(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, category_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCategoryFieldRequest>,
+) -> Result<(StatusCode, Json<CategoryFieldResponse>), ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let value_type = FieldType::from_code(&payload.value_type).ok_or_else(|| {
+        ApiError::invalid_request(uri.path(), "Type de champ invalide.", "invalid_field_type")
+    })?;
+    let field = db
+        .create_category_field(space_id, category_id, &payload.name, value_type)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(field.into())))
+}
+
+fn positive_revision(value: &str, instance: &str) -> Result<u64, ApiError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(instance, "Revision attendue invalide.", "invalid_revision")
+        })
+}
+
+async fn authorized_item(
+    db: &Database,
+    principal: &Principal,
+    item_id: Uuid,
+    permission: Permission,
+    instance: &str,
+) -> Result<Item, ApiError> {
+    let item = db
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(instance),
+            _ => ApiError::internal(instance),
+        })?;
+    authorized_space(db, principal, item.space_id, permission, instance).await?;
+    Ok(item)
+}
+
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/categories", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemCategoryListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_item_categories(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemCategoryListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = authorized_item(
+        db,
+        &principal,
+        item_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let categories = db
+        .item_categories(item_id, item.space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(ItemCategoryListResponse {
+        revision: item.revision.to_string(),
+        categories: categories.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/items/{item_id}/categories", tag = "collection", request_body = AddItemCategoriesRequest,
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemCategoryListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn add_item_categories(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<AddItemCategoriesRequest>,
+) -> Result<Json<ItemCategoryListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = authorized_item(
+        db,
+        &principal,
+        item_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let expected = positive_revision(&payload.expected_revision, uri.path())?;
+    let revision = db
+        .add_item_categories(item_id, expected, &payload.category_ids)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    let categories = db
+        .item_categories(item_id, item.space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(ItemCategoryListResponse {
+        revision: revision.to_string(),
+        categories: categories.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/fields", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = EffectiveFieldListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_item_fields(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<EffectiveFieldListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = authorized_item(
+        db,
+        &principal,
+        item_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let fields = db
+        .effective_item_fields(item_id, item.space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(EffectiveFieldListResponse {
+        revision: item.revision.to_string(),
+        fields: fields.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(put, path = "/api/v1/items/{item_id}/fields/{field_id}", tag = "collection", request_body = SetItemFieldValueRequest,
+    params(("item_id" = Uuid, Path, description = "Objet"), ("field_id" = Uuid, Path, description = "Champ")),
+    responses((status = 200, body = EffectiveFieldListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn set_item_field_value(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((item_id, field_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<SetItemFieldValueRequest>,
+) -> Result<Json<EffectiveFieldListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = authorized_item(
+        db,
+        &principal,
+        item_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let expected = positive_revision(&payload.expected_revision, uri.path())?;
+    let revision = db
+        .set_item_field_value(item_id, field_id, expected, &payload.value)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    let fields = db
+        .effective_item_fields(item_id, item.space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(EffectiveFieldListResponse {
+        revision: revision.to_string(),
+        fields: fields.into_iter().map(Into::into).collect(),
+    }))
 }
 
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/items", tag = "collection",
@@ -1659,11 +2149,12 @@ async fn transfer_item(
     )
     .await?;
     let outcome = database
-        .transfer_item(
+        .transfer_item_with_categories(
             item_id,
             payload.destination_space_id,
             expected_revision,
             principal.subject,
+            payload.destination_category_ids.as_deref().unwrap_or(&[]),
         )
         .await
         .map_err(|error| match error.inventory_error() {
@@ -1680,6 +2171,16 @@ async fn transfer_item(
                 uri.path(),
                 "Cet objet est dans la corbeille ; restaurez-le avant de le transferer.",
                 "invalid_state",
+            ),
+            Some(InventoryError::DestinationCategoriesRequired) => ApiError::invalid_request(
+                uri.path(),
+                "Choisissez au moins une categorie de destination avant le transfert.",
+                "destination_categories_required",
+            ),
+            Some(InventoryError::InvalidDestinationCategory) => ApiError::invalid_request(
+                uri.path(),
+                "Une categorie choisie n'appartient pas a l'espace de destination.",
+                "invalid_destination_category",
             ),
             _ => ApiError::internal(uri.path()),
         })?;
@@ -1779,6 +2280,14 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         list_spaces,
         list_admin_spaces,
         create_space,
+        list_categories,
+        create_category,
+        list_category_fields,
+        create_category_field,
+        list_item_categories,
+        add_item_categories,
+        list_item_fields,
+        set_item_field_value,
         list_items,
         create_item,
         get_item,
@@ -1807,6 +2316,10 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         LoginRequest,
         LoginResponse,
         SpaceResponse, SpaceListResponse, CreateSpaceRequest,
+        CategoryResponse, CategoryListResponse, CreateCategoryRequest,
+        CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest,
+        ItemCategoryResponse, ItemCategoryListResponse, AddItemCategoriesRequest,
+        EffectiveFieldResponse, EffectiveFieldListResponse, SetItemFieldValueRequest,
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
         ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, ItemStateRequest,
@@ -1888,6 +2401,30 @@ pub fn app_with_database_and_mail(database: Database, mail: Option<SmtpDelivery>
     })
 }
 
+fn taxonomy_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/categories"),
+            get(list_categories).post(create_category),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/categories/{{category_id}}/fields"),
+            get(list_category_fields).post(create_category_field),
+        )
+        .route(
+            &format!("{API_PREFIX}/items/{{item_id}}/categories"),
+            get(list_item_categories).post(add_item_categories),
+        )
+        .route(
+            &format!("{API_PREFIX}/items/{{item_id}}/fields"),
+            get(list_item_fields),
+        )
+        .route(
+            &format!("{API_PREFIX}/items/{{item_id}}/fields/{{field_id}}"),
+            put(set_item_field_value),
+        )
+}
+
 fn app_with_state(state: AppState) -> Router {
     let authentication = if state.database.is_some() {
         // Login is only reachable when a pool exists, so no handler has to cope with `None`.
@@ -1902,6 +2439,7 @@ fn app_with_state(state: AppState) -> Router {
                 &format!("{API_PREFIX}/spaces"),
                 get(list_spaces).post(create_space),
             )
+            .merge(taxonomy_routes())
             .route(
                 &format!("{API_PREFIX}/admin/spaces"),
                 get(list_admin_spaces),

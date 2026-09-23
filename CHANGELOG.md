@@ -12,6 +12,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Catégories imbriquées par espace, classement multiple des objets et champs personnalisés texte, nombre ou date hérités des catégories parentes, avec API, migration MariaDB et interface Windows.
+- Transfert d'un objet classé avec choix explicite des catégories de destination ; l'ancien classement et ses valeurs restent historiques et ne sont pas copiés vers le nouvel espace.
+- Tests HTTP/MariaDB du classement, de l'héritage, des droits et du transfert, ainsi que trois vérifications du contrat client Windows.
 - Consultation de l'audit des changements d'état depuis l'API et la fiche Windows, réservée au propriétaire ou à l'administrateur et limitée aux événements de l'espace courant.
 - États d'objet `active`, `archived` et `trashed` : archivage, corbeille et restauration réversibles, sans suppression physique en V1, avec conservation de l'identifiant, du numéro d'inventaire et de l'historique.
 - Routes `POST /api/v1/items/{item_id}/archive`, `/trash` et `/restore` exigeant l'écriture dans l'espace et la révision courante ; une transition non autorisée reçoit `422` et un objet en corbeille est refusé en écriture.

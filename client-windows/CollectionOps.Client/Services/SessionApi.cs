@@ -116,6 +116,28 @@ public sealed class SessionApi : IDisposable
     public Task<CollectionSpace> CreateSpaceAsync(string name) =>
         SendJsonAsync<CollectionSpace>(HttpMethod.Post, "api/v1/spaces", new { name });
 
+    public async Task<IReadOnlyList<CollectionCategory>> GetCategoriesAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<CategoryListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/categories");
+        return result.Categories;
+    }
+
+    public Task<CollectionCategory> CreateCategoryAsync(Guid spaceId, string name, Guid? parentId) =>
+        SendJsonAsync<CollectionCategory>(HttpMethod.Post,
+            $"api/v1/spaces/{spaceId}/categories", new { name, parent_id = parentId });
+
+    public async Task<IReadOnlyList<CategoryFieldDefinition>> GetCategoryFieldsAsync(Guid spaceId, Guid categoryId)
+    {
+        var result = await SendJsonAsync<CategoryFieldListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/categories/{categoryId}/fields");
+        return result.Fields;
+    }
+
+    public Task<CategoryFieldDefinition> CreateCategoryFieldAsync(Guid spaceId, Guid categoryId, string name, string valueType) =>
+        SendJsonAsync<CategoryFieldDefinition>(HttpMethod.Post,
+            $"api/v1/spaces/{spaceId}/categories/{categoryId}/fields", new { name, value_type = valueType });
+
     public async Task<IReadOnlyList<SpaceInvitation>> GetInvitationsAsync(Guid spaceId)
     {
         var result = await SendJsonAsync<InvitationListResponse>(HttpMethod.Get, $"api/v1/spaces/{spaceId}/invitations");
@@ -207,9 +229,25 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/items/{itemId}/restore",
             new { expected_revision = expectedRevision });
 
-    public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision) =>
+    public Task<ItemCategoryListResponse> GetItemCategoriesAsync(Guid itemId) =>
+        SendJsonAsync<ItemCategoryListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/categories");
+
+    public Task<ItemCategoryListResponse> AddItemCategoriesAsync(Guid itemId, IReadOnlyList<Guid> categoryIds, string expectedRevision) =>
+        SendJsonAsync<ItemCategoryListResponse>(HttpMethod.Post, $"api/v1/items/{itemId}/categories",
+            new { category_ids = categoryIds, expected_revision = expectedRevision });
+
+    public Task<EffectiveFieldListResponse> GetItemFieldsAsync(Guid itemId) =>
+        SendJsonAsync<EffectiveFieldListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/fields");
+
+    public Task<EffectiveFieldListResponse> SetItemFieldValueAsync(Guid itemId, Guid fieldId, string value, string expectedRevision) =>
+        SendJsonAsync<EffectiveFieldListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/fields/{fieldId}",
+            new { value, expected_revision = expectedRevision });
+
+    public Task<TransferOutcome> TransferItemAsync(Guid itemId, Guid destinationSpaceId, string expectedRevision,
+        IReadOnlyList<Guid>? destinationCategoryIds = null) =>
         SendJsonAsync<TransferOutcome>(HttpMethod.Post, $"api/v1/items/{itemId}/transfers",
-            new { destination_space_id = destinationSpaceId, expected_revision = expectedRevision });
+            new { destination_space_id = destinationSpaceId, expected_revision = expectedRevision,
+                destination_category_ids = destinationCategoryIds });
 
     public async Task<IReadOnlyList<InventoryTransfer>> GetItemTransfersAsync(Guid itemId)
     {
@@ -382,6 +420,42 @@ public sealed record SpaceMember(
     public string Label => Email is null ? DisplayName : $"{DisplayName} ({Email})";
 }
 public sealed record SpaceMemberListResponse([property: JsonPropertyName("members")] List<SpaceMember> Members);
+public sealed record CollectionCategory(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("parent_id")] Guid? ParentId,
+    [property: JsonPropertyName("name")] string Name);
+public sealed record CategoryListResponse(
+    [property: JsonPropertyName("categories")] List<CollectionCategory> Categories);
+public sealed record CategoryOption(Guid? Id, string Label);
+public sealed record CategoryFieldDefinition(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("category_id")] Guid CategoryId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("value_type")] string ValueType)
+{
+    public string Label => $"{Name} ({ValueType})";
+}
+public sealed record CategoryFieldListResponse(
+    [property: JsonPropertyName("fields")] List<CategoryFieldDefinition> Fields);
+public sealed record ItemCategoryAssignment(
+    [property: JsonPropertyName("category_id")] Guid CategoryId,
+    [property: JsonPropertyName("category_name")] string CategoryName);
+public sealed record ItemCategoryListResponse(
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("categories")] List<ItemCategoryAssignment> Categories);
+public sealed record EffectiveItemField(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("defined_category_name")] string DefinedCategoryName,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("value_type")] string ValueType,
+    [property: JsonPropertyName("value")] string? Value)
+{
+    public string Label => $"{DefinedCategoryName} · {Name} ({ValueType}) : {Value ?? "—"}";
+}
+public sealed record EffectiveFieldListResponse(
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("fields")] List<EffectiveItemField> Fields);
 public sealed record InventoryItem(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("space_id")] Guid SpaceId,
