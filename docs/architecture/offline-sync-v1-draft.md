@@ -18,6 +18,8 @@ Le client conserve un curseur opaque par espace et type de données. Après auth
 
 Chaque commande hors ligne reçoit un identifiant stable généré une fois par le client, l'identifiant de l'objet, l'espace connu, la révision serveur de départ et les champs modifiés. Lors de la reconnexion, le serveur vérifie la session et les droits courants, puis applique la commande et mémorise son identifiant dans la même transaction. Un rejeu après interruption retourne le résultat déjà enregistré : il ne crée pas un second objet et n'incrémente pas la révision deux fois. Les commandes sont envoyées dans l'ordre de dépendance ; une panne n'efface pas les commandes non accusées.
 
+Première tranche disponible en ligne : `POST /api/v1/spaces/{space_id}/items` accepte une clé de rejeu UUID et mémorise la réponse initiale dans la transaction de création. Cela ne constitue pas encore le protocole de synchronisation hors ligne : les autres commandes, le journal de changements et la politique de purge locale restent à définir et à tester.
+
 Le protocole devra spécifier les bornes de taille, la durée de conservation des accusés et des changements, la pagination, les suppressions logiques, les horodatages et la reprise après restauration de sauvegarde. Aucun nouvel endpoint de synchronisation ne doit être annoncé comme disponible avant migrations et tests correspondants.
 
 ## Conflits proposés

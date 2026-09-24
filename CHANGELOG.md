@@ -6,6 +6,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
+- Client Windows : la vérification des doublons accepte aussi les noms de 101 à 255 caractères et respecte les caractères Unicode ; la limite du formulaire suit celle du serveur. Un rejeu ne réinsère plus une ancienne fiche dans l'espace courant si l'objet a déjà été transféré ou archivé.
 - Client Windows : l'inventaire ouvre automatiquement la première fiche, conserve la sélection lors de l'actualisation et demande confirmation avant d'ajouter un objet dont le nom existe déjà dans l'espace.
 - Backend : correction de l'ordre des paramètres SQL de la recherche d'inventaire ; un objet créé peut désormais apparaître dans la liste de son espace et les filtres retrouver leurs résultats.
 - Client Windows : le filtre d'état de la page Collection n'essaie plus de charger l'inventaire avant la fin de l'initialisation de l'écran après une connexion.
@@ -28,7 +29,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Migration `item_relations` et tests HTTP/MariaDB de l'isolation entre espaces, des révisions, de la lecture entrante/sortante, de la corbeille et du nettoyage au transfert.
 - Renommage des catégories et des champs personnalisés par `PATCH`, sans changer le parent, le type de valeur ni les identifiants stables ; un nom déjà pris reçoit `409`, une définition d'un autre espace `404`, et les valeurs enregistrées restent attachées au même champ.
 - En-tête `Location` sur la création d'objet, pointant vers `/api/v1/items/{item_id}`.
-- Client Windows : renommage d'une catégorie et d'un champ, gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant), transfert de la propriété avec confirmation et nomination ou retrait d'un gestionnaire délégué ; les vérifications de contrat passent à 35.
+- Client Windows : renommage d'une catégorie et d'un champ, gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant), transfert de la propriété avec confirmation et nomination ou retrait d'un gestionnaire délégué ; les vérifications de contrat passent à 37.
+- Backend : création d'objet idempotente avec `Idempotency-Key` UUID facultatif ; un rejeu de la même requête restitue sa réponse initiale sans consommer de nouveau numéro d'inventaire, et une clé réutilisée avec un autre nom reçoit `409`.
+- Client Windows : l'ajout d'objet envoie cette clé et la réutilise après une tentative incertaine, jusqu'à ce que l'objet créé soit affiché dans sa fiche.
 - Client Windows : première refonte de la vue Collection autour de l'inventaire, avec liste et fiche côte à côte ; organisation, partage et acquisitions sont repliés en outils secondaires.
 - Client Windows : navigation distincte pour Inventaire, Acquisitions, Organisation et Partage ; aperçu explicite des futurs modules Documents et Finances sans fausse persistance.
 - Modification des envies, vendeurs et offres sans montants, avec révisions optimistes, refus des éditions périmées, contrôle des droits et édition dans le client Windows.

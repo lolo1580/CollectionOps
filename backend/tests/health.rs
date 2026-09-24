@@ -57,6 +57,13 @@ async fn openapi_document_exposes_health_contract() {
     assert!(payload["paths"]["/api/v1/health/ready"].is_object());
     assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["post"].is_object());
     assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["get"].is_object());
+    let create_parameters =
+        payload["paths"]["/api/v1/spaces/{space_id}/items"]["post"]["parameters"]
+            .as_array()
+            .unwrap();
+    assert!(create_parameters.iter().any(|parameter| {
+        parameter["name"] == "Idempotency-Key" && parameter["in"] == "header"
+    }));
 }
 
 #[tokio::test]

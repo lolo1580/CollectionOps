@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, error::Error, fmt};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
 use uuid::Uuid;
 
@@ -180,6 +180,8 @@ pub enum InventoryError {
     RevisionConflict,
     /// The name is empty after trimming, or longer than the column allows.
     InvalidName,
+    /// An idempotency key was already used for a different item name.
+    IdempotencyKeyReused,
     /// A free-text detail exceeds the allowed length.
     InvalidDetails,
     /// The counter row for the space is missing, which means the space was created without one.
@@ -662,6 +664,34 @@ impl Database {
         name: &str,
         created_by_account_id: Uuid,
     ) -> Result<Item, DatabaseError> {
+        self.create_item_inner(space_id, name, created_by_account_id, None)
+            .await
+    }
+
+    /// Creates an item once for a caller-provided request key, returning the original response
+    /// on retries. Keys are scoped to the account and space and are retained without expiry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InventoryError::IdempotencyKeyReused`] if the same key names another item.
+    pub async fn create_item_with_request_key(
+        &self,
+        space_id: Uuid,
+        name: &str,
+        created_by_account_id: Uuid,
+        request_key: Uuid,
+    ) -> Result<Item, DatabaseError> {
+        self.create_item_inner(space_id, name, created_by_account_id, Some(request_key))
+            .await
+    }
+
+    async fn create_item_inner(
+        &self,
+        space_id: Uuid,
+        name: &str,
+        created_by_account_id: Uuid,
+        request_key: Option<Uuid>,
+    ) -> Result<Item, DatabaseError> {
         let name = name.trim();
 
         if name.is_empty() || name.chars().count() > MAX_ITEM_NAME_CHARS {
@@ -669,6 +699,20 @@ impl Database {
         }
 
         let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+
+        if let Some(request_key) = request_key {
+            if let Some(item) = reserve_item_creation_request(
+                &mut transaction,
+                space_id,
+                created_by_account_id,
+                request_key,
+                name,
+            )
+            .await?
+            {
+                return Ok(item);
+            }
+        }
 
         // Lock first, read second: the lock must be held before the value is read, otherwise
         // two transactions could both read the same number and collide on the unique key.
@@ -709,6 +753,22 @@ impl Database {
         .map_err(DatabaseError::Query)?;
 
         let item = fetch_item(&mut *transaction, parse_uuid(&id)?).await?;
+        if let Some(request_key) = request_key {
+            sqlx::query(
+                "UPDATE item_creation_requests \
+                 SET item_id = ?, inventory_number = ?, item_created_at = ? \
+                 WHERE space_id = ? AND account_id = ? AND request_key = ?",
+            )
+            .bind(&id)
+            .bind(item.inventory_number)
+            .bind(item.created_at.naive_utc())
+            .bind(space_id.to_string())
+            .bind(created_by_account_id.to_string())
+            .bind(request_key.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+        }
         transaction.commit().await.map_err(DatabaseError::Query)?;
 
         Ok(item)
@@ -1954,6 +2014,72 @@ pub(crate) fn permission_from_code(code: &str) -> Option<Permission> {
         "documents_write" => Some(Permission::DocumentsWrite),
         _ => None,
     }
+}
+
+async fn reserve_item_creation_request(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+    account_id: Uuid,
+    request_key: Uuid,
+    name: &str,
+) -> Result<Option<Item>, DatabaseError> {
+    // The unique-key insert serializes concurrent retries. An uncommitted first request blocks
+    // the second until its complete snapshot is committed or rolled back.
+    sqlx::query(
+        "INSERT INTO item_creation_requests \
+             (space_id, account_id, request_key, requested_name) VALUES (?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE request_key = request_key",
+    )
+    .bind(space_id.to_string())
+    .bind(account_id.to_string())
+    .bind(request_key.to_string())
+    .bind(name)
+    .execute(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+
+    let row = sqlx::query(
+        "SELECT requested_name, item_id, inventory_number, item_created_at \
+         FROM item_creation_requests \
+         WHERE space_id = ? AND account_id = ? AND request_key = ? FOR UPDATE",
+    )
+    .bind(space_id.to_string())
+    .bind(account_id.to_string())
+    .bind(request_key.to_string())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+    let requested_name: String = row
+        .try_get("requested_name")
+        .map_err(DatabaseError::Query)?;
+    if requested_name != name {
+        return Err(DatabaseError::Inventory(
+            InventoryError::IdempotencyKeyReused,
+        ));
+    }
+    let item_id: Option<Vec<u8>> = row.try_get("item_id").map_err(DatabaseError::Query)?;
+    if item_id.is_none() {
+        return Ok(None);
+    }
+    let inventory_number: u64 = row
+        .try_get("inventory_number")
+        .map_err(DatabaseError::Query)?;
+    let item_created_at: NaiveDateTime = row
+        .try_get("item_created_at")
+        .map_err(DatabaseError::Query)?;
+    Ok(Some(Item {
+        id: parse_uuid(&decode_text(&row, "item_id")?)?,
+        space_id,
+        inventory_number,
+        name: requested_name,
+        description: None,
+        historical_reference: None,
+        technical_reference: None,
+        state: ItemState::Active,
+        revision: 1,
+        created_by_account_id: account_id,
+        created_at: item_created_at.and_utc(),
+    }))
 }
 
 /// Parses a text identifier, reporting a missing row rather than a malformed UUID.

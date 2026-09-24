@@ -14,6 +14,8 @@ await TransferUsesExpectedRevision();
 await ReadTransferHistory();
 await ReadStateAuditHistory();
 await ReadInventoryPage();
+await CreateItemCarriesIdempotencyKey();
+await LongItemNameCanBeCheckedForDuplicates();
 await InventoryPageCarriesStateFilter();
 await ArchiveUsesExpectedRevision();
 await AcceptNewAccountInvitationWithoutLeakingTokenToUrl();
@@ -37,7 +39,45 @@ await ReadAndReplaceItemRelations();
 await TransferSpaceOwnership();
 await UpdateAcquisitionProspectsWithRevision();
 await ReadAndManageSpaceManagers();
-Console.WriteLine("SessionApi: 35 checks passed.");
+Console.WriteLine("SessionApi: 37 checks passed.");
+
+static async Task LongItemNameCanBeCheckedForDuplicates()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var itemId = Guid.NewGuid();
+    var name = new string('A', 99) + "😀" + new string('B', 50);
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"items\":[{{\"id\":\"{itemId}\",\"space_id\":\"{spaceId}\",\"inventory_number\":\"1\",\"name\":\"{name}\",\"description\":null,\"historical_reference\":null,\"technical_reference\":null,\"revision\":\"1\",\"created_at\":\"2026-09-24T10:00:00Z\",\"state\":\"active\"}}],\"next_cursor\":null}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var duplicate = await api.FindItemWithExactNameAsync(spaceId, name);
+    var q = Uri.UnescapeDataString(handler.LastQuery!.Split('&').Single(part => part.StartsWith("q=")).Substring(2));
+    Assert(duplicate?.Id == itemId && q.EnumerateRunes().Count() == 100 && q.EndsWith("😀") &&
+        handler.LastQuery.Contains("state=all"),
+        "A long name must use a valid 100-scalar search while still comparing the full item name.");
+}
+
+static async Task CreateItemCarriesIdempotencyKey()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var itemId = Guid.NewGuid();
+    var requestKey = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.Created,
+        $"{{\"id\":\"{itemId}\",\"space_id\":\"{spaceId}\",\"inventory_number\":\"1\",\"name\":\"Mirage 2000B\",\"description\":null,\"historical_reference\":null,\"technical_reference\":null,\"revision\":\"1\",\"created_at\":\"2026-09-24T10:00:00Z\",\"state\":\"active\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var item = await api.CreateItemAsync(spaceId, "Mirage 2000B", requestKey);
+    Assert(item.Id == itemId && handler.LastMethod == HttpMethod.Post &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/items" &&
+        handler.LastIdempotencyKey == requestKey.ToString(),
+        "Item creation must send a stable idempotency key with the request.");
+}
 
 static Task RejectInsecureRemoteServer()
 {
@@ -694,6 +734,7 @@ sealed class FakeHandler : HttpMessageHandler
 {
     private readonly Queue<HttpResponseMessage> _responses = new();
     public string? LastToken { get; private set; }
+    public string? LastIdempotencyKey { get; private set; }
     public HttpMethod? LastMethod { get; private set; }
     public string? LastPath { get; private set; }
     public string? LastQuery { get; private set; }
@@ -709,6 +750,9 @@ sealed class FakeHandler : HttpMessageHandler
         LastMethod = request.Method;
         LastToken = request.Headers.TryGetValues("x-session-token", out var values)
             ? values.Single()
+            : null;
+        LastIdempotencyKey = request.Headers.TryGetValues("Idempotency-Key", out var requestKeys)
+            ? requestKeys.Single()
             : null;
         LastPath = request.RequestUri?.AbsolutePath;
         LastQuery = request.RequestUri?.Query;

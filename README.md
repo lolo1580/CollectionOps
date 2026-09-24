@@ -88,6 +88,8 @@ Le propriétaire (ou un administrateur système) peut déléguer la gestion des 
 
 Chaque espace possède une ligne de compteur (`inventory_counters`) initialisée à `1`. Le serveur attribue le numéro, jamais le client : la transaction verrouille la ligne du compteur, lit la valeur, l'incrémente et crée l'objet. Un échec annule aussi la réservation, donc un numéro n'est jamais gaspillé par une tentative refusée. L'unicité `(space_id, inventory_number)` reste une seconde ligne de défense.
 
+La création d'objet accepte un en-tête facultatif `Idempotency-Key` contenant un UUID. Une nouvelle tentative avec la même clé, le même compte, le même espace et le même nom retourne la réponse initiale sans créer de doublon ni consommer de numéro ; une clé réutilisée avec un autre nom renvoie `409`. Le client Windows conserve en mémoire la clé d'une tentative incertaine et la réutilise si le même ajout est retenté ; elle est effacée quand la nouvelle fiche est affichée. Générer une nouvelle clé signifie demander une nouvelle création. Voir le [contrat API](docs/api/v1-core-draft.md).
+
 Un transfert verrouille l'objet, vérifie la révision présentée par le client, puis réserve le prochain numéro de l'espace de destination et enregistre l'ancien et le nouveau numéro dans l'historique. L'identifiant de l'objet ne change jamais ; en revanche le numéro change, et les anciens numéros ne sont pas réutilisés. Une révision obsolète est refusée sans rien modifier.
 
 La création, la recherche paginée par espace, la lecture et le transfert des objets sont reliés à l'API et au client Windows. Le transfert exige l'écriture dans les espaces source et destination et une révision courante ; l'historique exige la lecture de tous les espaces qu'il mentionne.

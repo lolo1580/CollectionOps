@@ -39,6 +39,7 @@ public sealed partial class CollectionPage : Page
     private HashSet<Guid> _assignedCategoryIds = [];
     private HashSet<Guid> _managers = [];
     private IReadOnlyList<ItemRelation> _relations = [];
+    private (Guid SpaceId, Guid? AccountId, string? Server, string Name, Guid Key)? _pendingItemCreation;
 
     public CollectionPage()
     {
@@ -306,7 +307,8 @@ public sealed partial class CollectionPage : Page
             ShowStatus("Choisissez d'abord un espace.", InfoBarSeverity.Warning);
             return;
         }
-        var nameBox = new TextBox { Header = "Nom de l'objet", MaxLength = 255, PlaceholderText = "Ex. : Maquette de char" };
+        var nameBox = new TextBox { Header = "Nom de l'objet (255 caractères max.)", MaxLength = 1024,
+            PlaceholderText = "Ex. : Maquette de char" };
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
@@ -317,28 +319,39 @@ public sealed partial class CollectionPage : Page
             DefaultButton = ContentDialogButton.Primary,
             IsPrimaryButtonEnabled = false,
         };
-        nameBox.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(nameBox.Text);
+        nameBox.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled =
+            !string.IsNullOrWhiteSpace(nameBox.Text) && nameBox.Text.Trim().EnumerateRunes().Count() <= 255;
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         var name = nameBox.Text.Trim();
         await RunAsync(async () =>
         {
             if (ActiveSpace?.Id != space.Id) return;
-            var duplicate = await FindItemWithExactNameAsync(space.Id, name);
-            if (duplicate is not null)
+            var pending = _pendingItemCreation;
+            var retry = pending is { } previous && previous.SpaceId == space.Id &&
+                previous.AccountId == Api.CurrentAccountId && previous.Server == Api.ServerAddress &&
+                previous.Name == name;
+            if (!retry)
             {
-                var confirmation = new ContentDialog
+                var duplicate = await Api.FindItemWithExactNameAsync(space.Id, name);
+                if (duplicate is not null)
                 {
-                    XamlRoot = XamlRoot,
-                    Title = "Un objet porte déjà ce nom",
-                    Content = $"{duplicate.Name} (n° {duplicate.InventoryNumber}, {duplicate.StateLabel}) existe déjà dans cet espace. Voulez-vous vraiment créer un autre objet nommé « {name} » ?",
-                    PrimaryButtonText = "Créer quand même",
-                    CloseButtonText = "Annuler",
-                    DefaultButton = ContentDialogButton.Close,
-                };
-                if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+                    var confirmation = new ContentDialog
+                    {
+                        XamlRoot = XamlRoot,
+                        Title = "Un objet porte déjà ce nom",
+                        Content = $"{duplicate.Name} (n° {duplicate.InventoryNumber}, {duplicate.StateLabel}) existe déjà dans cet espace. Voulez-vous vraiment créer un autre objet nommé « {name} » ?",
+                        PrimaryButtonText = "Créer quand même",
+                        CloseButtonText = "Annuler",
+                        DefaultButton = ContentDialogButton.Close,
+                    };
+                    if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+                }
+                pending = (space.Id, Api.CurrentAccountId, Api.ServerAddress, name, Guid.NewGuid());
+                _pendingItemCreation = pending;
             }
             if (ActiveSpace?.Id != space.Id) return;
-            var created = await Api.CreateItemAsync(space.Id, name);
+            var created = await Api.CreateItemAsync(space.Id, name, pending!.Value.Key);
+            _pendingItemCreation = null;
             _changingFilters = true;
             try
             {
@@ -359,30 +372,23 @@ public sealed partial class CollectionPage : Page
             var selected = visibleItems.FirstOrDefault(candidate => candidate.Id == created.Id);
             if (selected is null)
             {
-                visibleItems.Insert(0, created);
+                var current = await Api.GetItemAsync(created.Id);
+                if (current.SpaceId != space.Id || current.State != "active")
+                {
+                    ShowStatus("Objet créé, mais il n'est plus actif dans cet espace. Actualisez la liste.",
+                        InfoBarSeverity.Warning);
+                    return;
+                }
+                visibleItems.Insert(0, current);
                 Items.ItemsSource = visibleItems;
                 Items.Visibility = Visibility.Visible;
                 InventoryEmptyState.Visibility = Visibility.Collapsed;
-                selected = created;
+                selected = current;
             }
             Items.SelectedItem = selected;
             Items.ScrollIntoView(selected);
             ShowStatus("Objet ajouté ; sa fiche est ouverte.", InfoBarSeverity.Success);
         });
-    }
-
-    private async Task<InventoryItem?> FindItemWithExactNameAsync(Guid spaceId, string name)
-    {
-        string? cursor = null;
-        do
-        {
-            var page = await Api.GetItemsPageAsync(spaceId, name, cursor, limit: 100, state: "all");
-            var duplicate = page.Items.FirstOrDefault(item =>
-                string.Equals(item.Name.Trim(), name, StringComparison.OrdinalIgnoreCase));
-            if (duplicate is not null) return duplicate;
-            cursor = page.NextCursor;
-        } while (cursor is not null);
-        return null;
     }
 
     private async void OnInvite(object sender, RoutedEventArgs e)

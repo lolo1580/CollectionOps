@@ -363,8 +363,25 @@ public sealed class SessionApi : IDisposable
             $"api/v1/spaces/{spaceId}/items?{string.Join("&", parameters)}");
     }
 
-    public Task<InventoryItem> CreateItemAsync(Guid spaceId, string name) =>
-        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/items", new { name });
+    public async Task<InventoryItem?> FindItemWithExactNameAsync(Guid spaceId, string name)
+    {
+        // The API accepts 255-character item names but limits search to 100 Unicode scalars.
+        var search = string.Concat(name.EnumerateRunes().Take(100).Select(rune => rune.ToString()));
+        string? cursor = null;
+        do
+        {
+            var page = await GetItemsPageAsync(spaceId, search, cursor, limit: 100, state: "all");
+            var duplicate = page.Items.FirstOrDefault(item =>
+                string.Equals(item.Name.Trim(), name, StringComparison.OrdinalIgnoreCase));
+            if (duplicate is not null) return duplicate;
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+        return null;
+    }
+
+    public Task<InventoryItem> CreateItemAsync(Guid spaceId, string name, Guid requestKey) =>
+        SendJsonAsync<InventoryItem>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/items",
+            new { name }, requestKey);
 
     public Task<InventoryItem> GetItemAsync(Guid itemId) =>
         SendJsonAsync<InventoryItem>(HttpMethod.Get, $"api/v1/items/{itemId}");
@@ -483,9 +500,11 @@ public sealed class SessionApi : IDisposable
         return request;
     }
 
-    private async Task<T> SendJsonAsync<T>(HttpMethod method, string path, object? body = null)
+    private async Task<T> SendJsonAsync<T>(HttpMethod method, string path, object? body = null,
+        Guid? requestKey = null)
     {
         using var request = AuthenticatedRequest(method, path);
+        if (requestKey is { } key) request.Headers.Add("Idempotency-Key", key.ToString());
         if (body is not null)
         {
             request.Content = JsonContent.Create(body);

@@ -3500,9 +3500,11 @@ async fn list_items(
 }
 
 #[utoipa::path(post, path = "/api/v1/spaces/{space_id}/items", tag = "collection", request_body = CreateItemRequest,
-    params(("space_id" = Uuid, Path, description = "Espace de collection")),
+    params(("space_id" = Uuid, Path, description = "Espace de collection"),
+        ("Idempotency-Key" = Option<Uuid>, Header, description = "UUID a reutiliser pour rejouer la meme creation")),
     responses((status = 201, body = ItemResponse), (status = 401, body = ProblemDetails),
-        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
 async fn create_item(
     State(state): State<AppState>,
     uri: Uri,
@@ -3523,15 +3525,45 @@ async fn create_item(
         uri.path(),
     )
     .await?;
-    let item = database
-        .create_item(space_id, &payload.name, principal.subject)
-        .await
-        .map_err(|error| match error.inventory_error() {
-            Some(InventoryError::InvalidName) => {
-                ApiError::invalid_request(uri.path(), "Nom d'objet invalide.", "invalid_name")
-            }
-            _ => ApiError::internal(uri.path()),
-        })?;
+    let request_key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .ok_or_else(|| {
+                    ApiError::invalid_request(
+                        uri.path(),
+                        "Idempotency-Key doit être un UUID valide.",
+                        "invalid_idempotency_key",
+                    )
+                })
+        })
+        .transpose()?;
+    let result = match request_key {
+        Some(key) => {
+            database
+                .create_item_with_request_key(space_id, &payload.name, principal.subject, key)
+                .await
+        }
+        None => {
+            database
+                .create_item(space_id, &payload.name, principal.subject)
+                .await
+        }
+    };
+    let item = result.map_err(|error| match error.inventory_error() {
+        Some(InventoryError::InvalidName) => {
+            ApiError::invalid_request(uri.path(), "Nom d'objet invalide.", "invalid_name")
+        }
+        Some(InventoryError::IdempotencyKeyReused) => ApiError::conflict(
+            uri.path(),
+            "Cette cle de creation a deja ete utilisee pour un autre nom d'objet.",
+            "idempotency_key_reused",
+        ),
+        _ => ApiError::internal(uri.path()),
+    })?;
     let item: ItemResponse = item.into();
     let location = format!("{API_PREFIX}/items/{}", item.id);
     let mut response = Json(item).into_response();
