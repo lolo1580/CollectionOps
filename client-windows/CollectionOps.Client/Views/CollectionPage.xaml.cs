@@ -119,9 +119,12 @@ public sealed partial class CollectionPage : Page
             if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state ||
                 _categoryFilter != categoryId || _locationFilter != locationId || _groupFilter != groupId) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
+            var selectedId = ActiveItem?.Id;
             var seenIds = items.Select(item => item.Id).ToHashSet();
             items.AddRange(page.Items.Where(item => seenIds.Add(item.Id)));
             Items.ItemsSource = items;
+            Items.SelectedItem = items.FirstOrDefault(item => item.Id == selectedId);
+            if (Items.SelectedItem is not null) Items.ScrollIntoView(Items.SelectedItem);
             _nextCursor = page.NextCursor;
         });
     }
@@ -313,6 +316,22 @@ public sealed partial class CollectionPage : Page
         var name = nameBox.Text.Trim();
         await RunAsync(async () =>
         {
+            if (ActiveSpace?.Id != space.Id) return;
+            var duplicate = await FindItemWithExactNameAsync(space.Id, name);
+            if (duplicate is not null)
+            {
+                var confirmation = new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "Un objet porte déjà ce nom",
+                    Content = $"{duplicate.Name} (n° {duplicate.InventoryNumber}, {duplicate.StateLabel}) existe déjà dans cet espace. Voulez-vous vraiment créer un autre objet nommé « {name} » ?",
+                    PrimaryButtonText = "Créer quand même",
+                    CloseButtonText = "Annuler",
+                    DefaultButton = ContentDialogButton.Close,
+                };
+                if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            }
+            if (ActiveSpace?.Id != space.Id) return;
             var created = await Api.CreateItemAsync(space.Id, name);
             _changingFilters = true;
             try
@@ -329,7 +348,7 @@ public sealed partial class CollectionPage : Page
                 GroupFilter.SelectedIndex = 0;
             }
             finally { _changingFilters = false; }
-            await RefreshItemsCoreAsync();
+            await RefreshItemsCoreAsync(created.Id, selectFirstWhenMissing: false);
             var visibleItems = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
             var selected = visibleItems.FirstOrDefault(candidate => candidate.Id == created.Id);
             if (selected is null)
@@ -341,8 +360,23 @@ public sealed partial class CollectionPage : Page
                 selected = created;
             }
             Items.SelectedItem = selected;
+            Items.ScrollIntoView(selected);
             ShowStatus("Objet ajouté ; sa fiche est ouverte.", InfoBarSeverity.Success);
         });
+    }
+
+    private async Task<InventoryItem?> FindItemWithExactNameAsync(Guid spaceId, string name)
+    {
+        string? cursor = null;
+        do
+        {
+            var page = await Api.GetItemsPageAsync(spaceId, name, cursor, limit: 100, state: "all");
+            var duplicate = page.Items.FirstOrDefault(item =>
+                string.Equals(item.Name.Trim(), name, StringComparison.OrdinalIgnoreCase));
+            if (duplicate is not null) return duplicate;
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+        return null;
     }
 
     private async void OnInvite(object sender, RoutedEventArgs e)
@@ -726,10 +760,11 @@ public sealed partial class CollectionPage : Page
         UpdateButtons();
     }
 
-    private Task RefreshItemsAsync() => RunAsync(RefreshItemsCoreAsync);
+    private Task RefreshItemsAsync() => RunAsync(() => RefreshItemsCoreAsync());
 
-    private async Task RefreshItemsCoreAsync()
+    private async Task RefreshItemsCoreAsync(Guid? preferredItemId = null, bool selectFirstWhenMissing = true)
     {
+        var selectedId = preferredItemId ?? ActiveItem?.Id;
         _nextCursor = null;
         if (ActiveSpace is { } space && _canReadActiveSpace)
         {
@@ -743,6 +778,9 @@ public sealed partial class CollectionPage : Page
                 ? "Aucun objet ne correspond à ces filtres. Essayez de les modifier."
                 : "Aucun objet dans cet espace. Cliquez sur Ajouter un objet pour commencer.";
             InventoryEmptyState.Visibility = page.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            Items.SelectedItem = page.Items.FirstOrDefault(item => item.Id == selectedId)
+                ?? (selectFirstWhenMissing ? page.Items.FirstOrDefault() : null);
+            if (Items.SelectedItem is not null) Items.ScrollIntoView(Items.SelectedItem);
         }
         else
         {
@@ -752,8 +790,8 @@ public sealed partial class CollectionPage : Page
                 ? "Choisissez ou créez un espace pour commencer."
                 : "Vous n'avez pas accès à l'inventaire de cet espace.";
             InventoryEmptyState.Visibility = Visibility.Visible;
+            Items.SelectedItem = null;
         }
-        Items.SelectedItem = null;
         TransferHistory.ItemsSource = null;
         StateAuditHistory.ItemsSource = null;
     }

@@ -6,6 +6,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
+- Client Windows : l'inventaire ouvre automatiquement la première fiche, conserve la sélection lors de l'actualisation et demande confirmation avant d'ajouter un objet dont le nom existe déjà dans l'espace.
 - Backend : correction de l'ordre des paramètres SQL de la recherche d'inventaire ; un objet créé peut désormais apparaître dans la liste de son espace et les filtres retrouver leurs résultats.
 - Client Windows : le filtre d'état de la page Collection n'essaie plus de charger l'inventaire avant la fin de l'initialisation de l'écran après une connexion.
 - Client Windows : une collection vide affiche une aide de départ et masque la fiche tant qu'aucun objet n'est sélectionné ; l'accueil propose un accès direct à l'inventaire.
