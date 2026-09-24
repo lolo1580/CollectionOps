@@ -36,7 +36,8 @@ await RenameCategoryAndFieldDefinitions();
 await ReadAndReplaceItemRelations();
 await TransferSpaceOwnership();
 await UpdateAcquisitionProspectsWithRevision();
-Console.WriteLine("SessionApi: 34 checks passed.");
+await ReadAndManageSpaceManagers();
+Console.WriteLine("SessionApi: 35 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -640,6 +641,34 @@ static async Task UpdateAcquisitionProspectsWithRevision()
         handler.LastBody?.Contains("\"expected_revision\":\"3\"") == true &&
         !handler.LastBody.Contains("price") && !handler.LastBody.Contains("amount"),
         "Offer editing must keep the optimistic revision and remain non-financial.");
+}
+
+static async Task ReadAndManageSpaceManagers()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var managerId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"managers\":[{{\"account_id\":\"{managerId}\",\"display_name\":\"Gestionnaire\"}}]}}");
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var managers = await api.GetSpaceManagersAsync(spaceId);
+    Assert(managers.Single().DisplayName == "Gestionnaire" &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/managers",
+        "The delegated managers must parse.");
+    await api.AppointSpaceManagerAsync(spaceId, managerId);
+    Assert(handler.LastMethod == HttpMethod.Put &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/managers/{managerId}" &&
+        handler.LastToken == "secret",
+        "Appointing a manager must PUT the member route.");
+    await api.RevokeSpaceManagerAsync(spaceId, managerId);
+    Assert(handler.LastMethod == HttpMethod.Delete &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/managers/{managerId}",
+        "Revoking a manager must DELETE the same route.");
 }
 
 static void Assert(bool condition, string message)

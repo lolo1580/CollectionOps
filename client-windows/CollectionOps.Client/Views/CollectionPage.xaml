@@ -148,6 +148,9 @@
                     <Button x:Name="RefreshMembersButton" Content="Actualiser" Click="OnRefreshMembers" />
                     <Button x:Name="TransferOwnershipButton" Content="Transférer la propriété" Click="OnTransferOwnership" />
                 </StackPanel>
+                <TextBlock x:Name="ManagersSummary" Text="Aucun gestionnaire délégué." TextWrapping="Wrap" />
+                <Button x:Name="ToggleManagerButton" Content="Nommer ou retirer le gestionnaire" Click="OnToggleManager" HorizontalAlignment="Left" />
+                <TextBlock Text="Le propriétaire ou un administrateur peut déléguer la gestion des membres à un membre : le gestionnaire gère les droits et les retraits, sans pouvoir toucher au propriétaire, nommer un autre gestionnaire ni dépasser ses propres droits." TextWrapping="Wrap" Opacity="0.7" />
                 <TextBlock Text="Seul le propriétaire actuel peut transmettre la propriété, et uniquement à un membre existant. Le nouveau propriétaire ne reçoit aucun droit de collection ou financier supplémentaire." TextWrapping="Wrap" Opacity="0.7" />
             </StackPanel>
             </StackPanel>

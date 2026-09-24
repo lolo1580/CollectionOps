@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration, catégories, champs personnalisés, renommage des définitions, relations entre objets et transferts sont exposées ; la synchronisation reste à définir.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration, catégories, champs personnalisés, renommage des définitions, relations entre objets, transferts, propriété et délégation de gestion des membres sont exposées ; la synchronisation reste à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -75,6 +75,10 @@ La modification ou la suppression des définitions de catégories et de champs n
 `GET /api/v1/items/{item_id}/relations` retourne `{"revision":"N","relations":[...]}` avec les liens sortants et entrants de l'objet dans son espace courant. Chaque entrée expose `id`, `kind` (`related`, `variant_of` ou `part_of`), `direction` (`outgoing` ou `incoming`), `related_item_id`, `related_item_name` et `created_at`.
 
 `PUT` sur la même route remplace les liens **sortants** de l'objet par `{"relations":[{"target_id":"<id>","kind":"variant_of"}],"expected_revision":"1"}`. Un objet ne peut pas se lier à lui-même, la même paire (cible, type) ne peut pas être répétée et la limite est de 50 entrées. Chaque cible doit appartenir au même espace ; une cible inconnue ou d'un autre espace reçoit `404`. Une sélection identique ne change pas la révision ; une révision obsolète reçoit `409`, un objet en corbeille refuse l'écriture avec `422`. Un transfert vers un autre espace supprime tous les liens qui mentionnent l'objet. La lecture exige `collections_read`, l'écriture `collections_write`.
+
+## Délégation de gestion des membres
+
+`GET /api/v1/spaces/{space_id}/managers` retourne `{"managers":[{"account_id":"...","display_name":"..."}]}` au propriétaire, à l'administrateur système ou à un gestionnaire. `PUT` et `DELETE` sur `/api/v1/spaces/{space_id}/managers/{account_id}` nomment et révoquent un gestionnaire ; ils exigent le propriétaire ou l'administrateur système. Un gestionnaire doit être membre (`422` sinon), ne peut pas être le propriétaire (`422`) ni déjà gestionnaire (`409`). Un gestionnaire peut lister les membres, remplacer les droits d'un autre membre et retirer un autre membre, mais il ne peut pas modifier le propriétaire (`403`), ni accorder un droit qu'il ne détient pas lui-même (`403`), ni nommer ou révoquer un gestionnaire (`404`). Retirer un membre supprime sa délégation. Chaque nomination et révocation est auditée.
 
 ## Archiver, mettre à la corbeille, restaurer
 

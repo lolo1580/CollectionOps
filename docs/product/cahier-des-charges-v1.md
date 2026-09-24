@@ -102,6 +102,8 @@ Scénarios de recette de F02 à conserver pour le premier lot :
 | D09 | Quels conflits hors ligne peuvent être fusionnés automatiquement et lesquels exigent un choix humain ? | Protocole de synchronisation. |
 | D10 | Quels formats d'import/export et quelles limites de taille documentaire retenir pour la V1 ? | API, stockage, recette. |
 
+Des propositions concrètes avec critères d'acceptation figurent dans le [document de décisions ouvertes](decisions-open-v1-draft.md) : elles attendent une validation explicite avant toute implémentation.
+
 ### Durées de session validées (ex-D08)
 
 Décision prise le 2026-09-22, détaillée dans [ADR-0003](../architecture/ADR-0003-local-credentials-and-sessions.md) :

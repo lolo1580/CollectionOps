@@ -293,6 +293,19 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<SpaceOwnershipTransfer>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/ownership",
             new { new_owner_account_id = newOwnerAccountId });
 
+    public async Task<IReadOnlyList<SpaceManager>> GetSpaceManagersAsync(Guid spaceId)
+    {
+        var result = await SendJsonAsync<SpaceManagerListResponse>(HttpMethod.Get,
+            $"api/v1/spaces/{spaceId}/managers");
+        return result.Managers;
+    }
+
+    public Task AppointSpaceManagerAsync(Guid spaceId, Guid accountId) =>
+        SendEmptyAsync(HttpMethod.Put, $"api/v1/spaces/{spaceId}/managers/{accountId}");
+
+    public Task RevokeSpaceManagerAsync(Guid spaceId, Guid accountId) =>
+        SendEmptyAsync(HttpMethod.Delete, $"api/v1/spaces/{spaceId}/managers/{accountId}");
+
     public async Task RemoveMemberAsync(Guid spaceId, Guid accountId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/spaces/{spaceId}/members/{accountId}");
@@ -487,6 +500,17 @@ public sealed class SessionApi : IDisposable
             ?? throw new InvalidOperationException("La réponse du serveur est incomplète.");
     }
 
+    private async Task SendEmptyAsync(HttpMethod method, string path)
+    {
+        using var request = AuthenticatedRequest(method, path);
+        using var response = await _client.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            SignOut();
+        }
+        await EnsureSuccessAsync(response);
+    }
+
     private static async Task EnsureSuccessAsync(HttpResponseMessage response)
     {
         if (response.IsSuccessStatusCode)
@@ -625,6 +649,11 @@ public sealed record SpaceOwnershipTransfer(
     [property: JsonPropertyName("new_owner_account_id")] Guid NewOwnerAccountId,
     [property: JsonPropertyName("actor_account_id")] Guid ActorAccountId,
     [property: JsonPropertyName("transferred_at")] DateTimeOffset TransferredAt);
+public sealed record SpaceManager(
+    [property: JsonPropertyName("account_id")] Guid AccountId,
+    [property: JsonPropertyName("display_name")] string DisplayName);
+public sealed record SpaceManagerListResponse(
+    [property: JsonPropertyName("managers")] List<SpaceManager> Managers);
 public sealed record CollectionCategory(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("space_id")] Guid SpaceId,

@@ -68,6 +68,8 @@ pub async fn clear_all(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     }
 
     for statement in [
+        "DELETE FROM space_managers",
+        "DELETE FROM space_manager_events",
         "DELETE FROM inventory_counters",
         "DELETE FROM space_permission_grants",
         "DELETE FROM space_memberships",

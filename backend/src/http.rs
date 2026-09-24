@@ -25,7 +25,7 @@ use crate::{
     database::{
         Database, DatabaseError, InventoryError, IssuedSession, Item, ItemSearchFilters, ItemState,
         ItemStateEvent, ItemTransfer, MemberWithAccount, SessionError, SessionRecord, Space,
-        SpaceError, SpaceOwnershipTransfer, TransferOutcome,
+        SpaceError, SpaceManagerEntry, SpaceOwnershipTransfer, TransferOutcome,
     },
     groups::{GroupError, InventoryGroup},
     invitations::{Invitation, InvitationError},
@@ -1322,6 +1322,26 @@ impl From<SpaceOwnershipTransfer> for SpaceOwnershipResponse {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceManagerResponse {
+    pub account_id: Uuid,
+    pub display_name: String,
+}
+
+impl From<SpaceManagerEntry> for SpaceManagerResponse {
+    fn from(value: SpaceManagerEntry) -> Self {
+        Self {
+            account_id: value.account_id,
+            display_name: value.display_name,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceManagerListResponse {
+    pub managers: Vec<SpaceManagerResponse>,
+}
+
 fn can_manage_members(principal: &Principal, owner_account_id: Uuid) -> bool {
     principal.subject == owner_account_id || principal.roles.contains("system_admin")
 }
@@ -1331,9 +1351,12 @@ fn member_error(error: &DatabaseError, instance: &str) -> ApiError {
         Some(SpaceError::NotMember | SpaceError::SpaceNotFound | SpaceError::NotAuthorized) => {
             ApiError::resource_not_found(instance)
         }
-        Some(SpaceError::CannotChangeOwnGrants | SpaceError::OwnerCannotBeRemoved) => {
-            ApiError::forbidden(instance)
-        }
+        Some(
+            SpaceError::CannotChangeOwnGrants
+            | SpaceError::OwnerCannotBeRemoved
+            | SpaceError::CannotModifyOwner
+            | SpaceError::CannotGrantUnheldPermission,
+        ) => ApiError::forbidden(instance),
         Some(SpaceError::OwnerCoreGrantsRequired) => ApiError::invalid_request(
             instance,
             "Le propriétaire doit conserver la lecture et l'écriture de collection.",
@@ -1367,6 +1390,30 @@ fn ownership_error(error: &DatabaseError, instance: &str) -> ApiError {
     }
 }
 
+fn manager_error(error: &DatabaseError, instance: &str) -> ApiError {
+    match error.space_error() {
+        Some(SpaceError::SpaceNotFound | SpaceError::NotAuthorized | SpaceError::NotManager) => {
+            ApiError::resource_not_found(instance)
+        }
+        Some(SpaceError::AlreadyManager) => ApiError::conflict(
+            instance,
+            "Ce membre est déjà gestionnaire.",
+            "already_manager",
+        ),
+        Some(SpaceError::OwnerCannotBeManager) => ApiError::invalid_request(
+            instance,
+            "Le propriétaire gère déjà les membres et n'est pas nommé gestionnaire.",
+            "owner_cannot_be_manager",
+        ),
+        Some(SpaceError::TargetNotMember) => ApiError::invalid_request(
+            instance,
+            "Le gestionnaire doit déjà être membre de l'espace.",
+            "target_not_member",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/members", tag = "sharing",
     responses((status = 200, body = SpaceMemberListResponse), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
 async fn list_members(
@@ -1380,11 +1427,11 @@ async fn list_members(
         .as_deref()
         .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
     let principal = authenticated_headers(db, &headers, uri.path()).await?;
-    let space = db
-        .space(space_id)
+    if !db
+        .manages_members(space_id, principal.subject)
         .await
-        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
-    if !can_manage_members(&principal, space.owner_account_id) {
+        .map_err(|_| ApiError::internal(uri.path()))?
+    {
         return Err(ApiError::resource_not_found(uri.path()));
     }
     let members = db
@@ -1411,11 +1458,11 @@ async fn update_member_permissions(
         .as_deref()
         .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
     let principal = authenticated_headers(db, &headers, uri.path()).await?;
-    let space = db
-        .space(space_id)
+    if !db
+        .manages_members(space_id, principal.subject)
         .await
-        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
-    if !can_manage_members(&principal, space.owner_account_id) {
+        .map_err(|_| ApiError::internal(uri.path()))?
+    {
         return Err(ApiError::resource_not_found(uri.path()));
     }
     db.set_member_permissions(
@@ -1449,11 +1496,11 @@ async fn remove_member(
         .as_deref()
         .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
     let principal = authenticated_headers(db, &headers, uri.path()).await?;
-    let space = db
-        .space(space_id)
+    if !db
+        .manages_members(space_id, principal.subject)
         .await
-        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
-    if !can_manage_members(&principal, space.owner_account_id) {
+        .map_err(|_| ApiError::internal(uri.path()))?
+    {
         return Err(ApiError::resource_not_found(uri.path()));
     }
     db.remove_member(space_id, account_id, principal.subject)
@@ -1493,6 +1540,92 @@ async fn transfer_space_ownership(
         .await
         .map_err(|error| ownership_error(&error, uri.path()))?;
     Ok(Json(transfer.into()))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/managers", tag = "sharing",
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = SpaceManagerListResponse), (status = 401, body = ProblemDetails),
+        (status = 404, body = ProblemDetails)))]
+async fn list_space_managers(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<SpaceManagerListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    if !db
+        .manages_members(space_id, principal.subject)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?
+    {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let managers = db
+        .space_managers_with_accounts(space_id)
+        .await
+        .map_err(|_| ApiError::internal(uri.path()))?;
+    Ok(Json(SpaceManagerListResponse {
+        managers: managers.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(put, path = "/api/v1/spaces/{space_id}/managers/{account_id}", tag = "sharing",
+    params(("space_id" = Uuid, Path, description = "Espace"), ("account_id" = Uuid, Path, description = "Compte")),
+    responses((status = 204), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn appoint_space_manager(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, account_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    db.appoint_space_manager(space_id, account_id, principal.subject)
+        .await
+        .map_err(|error| manager_error(&error, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(delete, path = "/api/v1/spaces/{space_id}/managers/{account_id}", tag = "sharing",
+    params(("space_id" = Uuid, Path, description = "Espace"), ("account_id" = Uuid, Path, description = "Compte")),
+    responses((status = 204), (status = 401, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn revoke_space_manager(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, account_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    if !can_manage_members(&principal, space.owner_account_id) {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    db.revoke_space_manager(space_id, account_id, principal.subject)
+        .await
+        .map_err(|error| manager_error(&error, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -3961,7 +4094,10 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         list_members,
         update_member_permissions,
         remove_member,
-        transfer_space_ownership
+        transfer_space_ownership,
+        list_space_managers,
+        appoint_space_manager,
+        revoke_space_manager
     ),
     components(schemas(
         HealthResponse,
@@ -3989,6 +4125,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
         TransferSpaceOwnershipRequest, SpaceOwnershipResponse,
+        SpaceManagerResponse, SpaceManagerListResponse,
         ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, UpdateItemDetailsRequest, ItemStateRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         ItemStateEventResponse, ItemStateEventListResponse,
@@ -4227,6 +4364,14 @@ fn app_with_state(state: AppState) -> Router {
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/ownership"),
                 post(transfer_space_ownership),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/managers"),
+                get(list_space_managers),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/managers/{{account_id}}"),
+                put(appoint_space_manager).delete(revoke_space_manager),
             )
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/invitations/{{invitation_id}}"),

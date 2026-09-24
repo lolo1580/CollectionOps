@@ -37,6 +37,7 @@ public sealed partial class CollectionPage : Page
     private IReadOnlyList<CollectionGroup> _groups = [];
     private int _assignedCategoryCount;
     private HashSet<Guid> _assignedCategoryIds = [];
+    private HashSet<Guid> _managers = [];
     private IReadOnlyList<ItemRelation> _relations = [];
 
     public CollectionPage()
@@ -523,12 +524,55 @@ public sealed partial class CollectionPage : Page
         });
     }
 
+    private async void OnToggleManager(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Members.SelectedItem is not SpaceMember member) return;
+        if (space.OwnerAccountId != Api.CurrentAccountId && !Api.CurrentIsSystemAdmin)
+        {
+            ShowStatus("Seul le propriétaire ou un administrateur peut déléguer la gestion.", InfoBarSeverity.Warning);
+            return;
+        }
+        if (member.AccountId == space.OwnerAccountId)
+        {
+            ShowStatus("Le propriétaire gère déjà les membres.", InfoBarSeverity.Warning);
+            return;
+        }
+        var isManager = _managers.Contains(member.AccountId);
+        await RunAsync(async () =>
+        {
+            if (isManager)
+            {
+                await Api.RevokeSpaceManagerAsync(space.Id, member.AccountId);
+            }
+            else
+            {
+                await Api.AppointSpaceManagerAsync(space.Id, member.AccountId);
+            }
+            await RefreshMembersCoreAsync(member.AccountId);
+            ShowStatus(isManager ? "Délégation retirée." : "Membre nommé gestionnaire.", InfoBarSeverity.Success);
+        });
+    }
+
     private async Task RefreshMembersCoreAsync(Guid? selectedId = null)
     {
         var space = ActiveSpace;
+        IReadOnlyList<SpaceManager> managers = [];
+        if (space is not null)
+        {
+            // Only the owner, an administrator or a manager may read this; a plain member gets
+            // a not-found answer, which must not surface as an error.
+            try { managers = await Api.GetSpaceManagersAsync(space.Id); }
+            catch (InvalidOperationException) { managers = []; }
+        }
+        _managers = managers.Select(manager => manager.AccountId).ToHashSet();
+        ManagersSummary.Text = managers.Count == 0
+            ? "Aucun gestionnaire délégué."
+            : "Gestionnaires : " + string.Join(", ", managers.Select(manager => manager.DisplayName));
+        var isOwnerOrAdmin = space is not null &&
+            (space.OwnerAccountId == Api.CurrentAccountId || Api.CurrentIsSystemAdmin);
+        var isManager = Api.CurrentAccountId is { } me && _managers.Contains(me);
         _canReadActiveSpace = !Api.CurrentIsSystemAdmin && space is not null;
-        MembersPanel.Visibility = space is not null &&
-            (space.OwnerAccountId == Api.CurrentAccountId || Api.CurrentIsSystemAdmin)
+        MembersPanel.Visibility = space is not null && (isOwnerOrAdmin || isManager)
             ? Visibility.Visible : Visibility.Collapsed;
         Members.ItemsSource = null;
         if (MembersPanel.Visibility != Visibility.Visible || space is null) return;
@@ -1400,6 +1444,7 @@ public sealed partial class CollectionPage : Page
         RemoveMemberButton.IsEnabled = false;
         RefreshMembersButton.IsEnabled = false;
         TransferOwnershipButton.IsEnabled = false;
+        ToggleManagerButton.IsEnabled = false;
         CreateCategoryButton.IsEnabled = false;
         CreateFieldButton.IsEnabled = false;
         SaveItemCategoriesButton.IsEnabled = false;
@@ -1462,6 +1507,10 @@ public sealed partial class CollectionPage : Page
         TransferOwnershipButton.IsEnabled = MembersPanel.Visibility == Visibility.Visible &&
             ActiveSpace?.OwnerAccountId == Api.CurrentAccountId &&
             Members.SelectedItem is SpaceMember newOwner && newOwner.AccountId != Api.CurrentAccountId;
+        ToggleManagerButton.IsEnabled = MembersPanel.Visibility == Visibility.Visible &&
+            ActiveSpace is { } managerSpace &&
+            (managerSpace.OwnerAccountId == Api.CurrentAccountId || Api.CurrentIsSystemAdmin) &&
+            Members.SelectedItem is SpaceMember candidate && candidate.AccountId != managerSpace.OwnerAccountId;
         CreateCategoryButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
         CreateFieldButton.IsEnabled = CreateCategoryButton.IsEnabled && FieldCategory.SelectedItem is CategoryOption { Id: not null };
         SaveItemCategoriesButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;

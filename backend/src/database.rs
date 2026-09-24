@@ -227,6 +227,13 @@ pub struct SpaceOwnershipTransfer {
     pub transferred_at: DateTime<Utc>,
 }
 
+/// A member the owner delegated member administration to, with its account identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceManagerEntry {
+    pub account_id: Uuid,
+    pub display_name: String,
+}
+
 /// A membership of one account in one space, with the account's effective grants.
 ///
 /// Identifiers are UUIDs and grants are a set, so this value can be handed straight to
@@ -285,6 +292,16 @@ pub enum SpaceError {
     OwnershipUnchanged,
     /// The requested new owner is not a member of the space.
     TargetNotMember,
+    /// The account is already a manager of this space.
+    AlreadyManager,
+    /// The account is not a manager of this space.
+    NotManager,
+    /// The owner already manages members and cannot be appointed as a manager.
+    OwnerCannotBeManager,
+    /// A non-owner manager tried to change the owner's grants.
+    CannotModifyOwner,
+    /// A non-owner manager tried to grant a permission it does not hold itself.
+    CannotGrantUnheldPermission,
 }
 
 impl Database {
@@ -1498,6 +1515,25 @@ impl Database {
             return Err(DatabaseError::Space(SpaceError::OwnerCoreGrantsRequired));
         }
 
+        // A delegated manager may only pass on rights it holds itself, and may never touch the
+        // owner: delegation must not become a way to escalate privileges.
+        let actor_is_privileged =
+            actor_is_owner_or_admin(&mut transaction, space_id, actor_account_id).await?;
+        if !actor_is_privileged {
+            if account_id == space.owner_account_id {
+                return Err(DatabaseError::Space(SpaceError::CannotModifyOwner));
+            }
+            let held = permission_codes_for(&mut transaction, space_id, actor_account_id).await?;
+            if selected
+                .iter()
+                .any(|permission| !held.contains(permission_code(*permission)))
+            {
+                return Err(DatabaseError::Space(
+                    SpaceError::CannotGrantUnheldPermission,
+                ));
+            }
+        }
+
         sqlx::query("DELETE FROM space_permission_grants WHERE space_id = ? AND account_id = ?")
             .bind(space_id.to_string())
             .bind(account_id.to_string())
@@ -1668,6 +1704,170 @@ impl Database {
         })
     }
 
+    /// Reports whether an account may manage the members of a space: its owner, a system
+    /// administrator, or a member the owner appointed as a manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the check cannot be evaluated.
+    pub async fn manages_members(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+    ) -> Result<bool, DatabaseError> {
+        let allowed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM spaces s WHERE s.id = ? AND ( \
+                 s.owner_account_id = ? \
+                 OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND a.is_system_admin = TRUE) \
+                 OR EXISTS (SELECT 1 FROM space_managers m WHERE m.space_id = s.id AND m.account_id = ?) \
+             )",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .bind(account_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+        Ok(allowed > 0)
+    }
+
+    /// Appoints an existing member as a manager of the space.
+    ///
+    /// Only the owner or a system administrator may appoint a manager. The owner is never
+    /// appointed, because it already manages the space, and the delegation is audited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] when the actor is not allowed, the space is missing, the
+    /// target is not a member, the target is the owner, or the target is already a manager.
+    pub async fn appoint_space_manager(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+        actor_account_id: Uuid,
+    ) -> Result<(), DatabaseError> {
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+        require_owner_or_admin(&mut transaction, space_id, actor_account_id).await?;
+        let space = fetch_space(&mut *transaction, space_id).await?;
+        if account_id == space.owner_account_id {
+            return Err(DatabaseError::Space(SpaceError::OwnerCannotBeManager));
+        }
+        let member: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT account_id FROM space_memberships WHERE space_id = ? AND account_id = ? FOR UPDATE",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        if member.is_none() {
+            return Err(DatabaseError::Space(SpaceError::TargetNotMember));
+        }
+        let existing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM space_managers WHERE space_id = ? AND account_id = ?",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        if existing > 0 {
+            return Err(DatabaseError::Space(SpaceError::AlreadyManager));
+        }
+        sqlx::query(
+            "INSERT INTO space_managers (space_id, account_id, appointed_by_account_id, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(space_id.to_string())
+        .bind(account_id.to_string())
+        .bind(actor_account_id.to_string())
+        .bind(Utc::now())
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        insert_manager_event(
+            &mut transaction,
+            space_id,
+            actor_account_id,
+            account_id,
+            "manager_appointed",
+        )
+        .await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+        Ok(())
+    }
+
+    /// Revokes a manager's delegation without touching its membership or grants.
+    ///
+    /// Only the owner or a system administrator may revoke a manager, and the revocation is
+    /// audited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] when the actor is not allowed, the space is missing, or
+    /// the account is not a manager.
+    pub async fn revoke_space_manager(
+        &self,
+        space_id: Uuid,
+        account_id: Uuid,
+        actor_account_id: Uuid,
+    ) -> Result<(), DatabaseError> {
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+        require_owner_or_admin(&mut transaction, space_id, actor_account_id).await?;
+        fetch_space(&mut *transaction, space_id).await?;
+        let removed =
+            sqlx::query("DELETE FROM space_managers WHERE space_id = ? AND account_id = ?")
+                .bind(space_id.to_string())
+                .bind(account_id.to_string())
+                .execute(&mut *transaction)
+                .await
+                .map_err(DatabaseError::Query)?
+                .rows_affected()
+                == 1;
+        if !removed {
+            return Err(DatabaseError::Space(SpaceError::NotManager));
+        }
+        insert_manager_event(
+            &mut transaction,
+            space_id,
+            actor_account_id,
+            account_id,
+            "manager_revoked",
+        )
+        .await?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+        Ok(())
+    }
+
+    /// Lists the appointed managers of a space with their account identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when managers or account identities cannot be loaded.
+    pub async fn space_managers_with_accounts(
+        &self,
+        space_id: Uuid,
+    ) -> Result<Vec<SpaceManagerEntry>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT m.account_id, a.display_name FROM space_managers m \
+             JOIN accounts a ON a.id = m.account_id \
+             WHERE m.space_id = ? ORDER BY a.display_name, m.account_id",
+        )
+        .bind(space_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(DatabaseError::Query)?;
+        rows.iter()
+            .map(|row| {
+                Ok(SpaceManagerEntry {
+                    account_id: parse_uuid(&decode_text(row, "account_id")?)?,
+                    display_name: row.try_get("display_name").map_err(DatabaseError::Query)?,
+                })
+            })
+            .collect()
+    }
+
     /// Lists the members of a space with their grants, for the sharing screen.
     ///
     /// # Errors
@@ -1777,17 +1977,107 @@ async fn require_member_manager(
     actor_id: Uuid,
 ) -> Result<(), DatabaseError> {
     let allowed: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM spaces s JOIN accounts a ON a.id = ? \
-         WHERE s.id = ? AND (s.owner_account_id = a.id OR a.is_system_admin = TRUE)",
+        "SELECT COUNT(*) FROM spaces s WHERE s.id = ? AND ( \
+             s.owner_account_id = ? \
+             OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND a.is_system_admin = TRUE) \
+             OR EXISTS (SELECT 1 FROM space_managers m WHERE m.space_id = s.id AND m.account_id = ?) \
+         )",
     )
-    .bind(actor_id.to_string())
     .bind(space_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(actor_id.to_string())
     .fetch_one(&mut **transaction)
     .await
     .map_err(DatabaseError::Query)?;
     if allowed == 0 {
         return Err(DatabaseError::Space(SpaceError::NotAuthorized));
     }
+    Ok(())
+}
+
+async fn require_owner_or_admin(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+    actor_id: Uuid,
+) -> Result<(), DatabaseError> {
+    let allowed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM spaces s WHERE s.id = ? AND ( \
+             s.owner_account_id = ? \
+             OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND a.is_system_admin = TRUE) \
+         )",
+    )
+    .bind(space_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(actor_id.to_string())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+    if allowed == 0 {
+        return Err(DatabaseError::Space(SpaceError::NotAuthorized));
+    }
+    Ok(())
+}
+
+async fn actor_is_owner_or_admin(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+    actor_id: Uuid,
+) -> Result<bool, DatabaseError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM spaces s WHERE s.id = ? AND ( \
+             s.owner_account_id = ? \
+             OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = ? AND a.is_system_admin = TRUE) \
+         )",
+    )
+    .bind(space_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(actor_id.to_string())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+    Ok(count > 0)
+}
+
+async fn permission_codes_for(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+    account_id: Uuid,
+) -> Result<BTreeSet<String>, DatabaseError> {
+    let rows = sqlx::query(
+        "SELECT permission_code FROM space_permission_grants WHERE space_id = ? AND account_id = ?",
+    )
+    .bind(space_id.to_string())
+    .bind(account_id.to_string())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
+    rows.iter()
+        .map(|row| decode_text(row, "permission_code"))
+        .collect()
+}
+
+async fn insert_manager_event(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+    actor_id: Uuid,
+    target_id: Uuid,
+    event_code: &str,
+) -> Result<(), DatabaseError> {
+    sqlx::query(
+        "INSERT INTO space_manager_events \
+             (id, space_id, actor_account_id, target_account_id, event_code, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::now_v7().to_string())
+    .bind(space_id.to_string())
+    .bind(actor_id.to_string())
+    .bind(target_id.to_string())
+    .bind(event_code)
+    .bind(Utc::now())
+    .execute(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?;
     Ok(())
 }
 

@@ -80,7 +80,9 @@ Chaque opération sur un espace doit vérifier deux choses : une permission appl
 
 Un membre ne peut pas modifier ses propres droits, et le propriétaire ne peut pas être retiré de son espace. Le transfert de propriété est une opération distincte et auditée : seul le propriétaire actuel peut le demander, et uniquement au profit d'un membre existant. Le nouveau propriétaire ne reçoit aucun droit de collection ou financier supplémentaire, et l'ancien propriétaire reste membre avec ses droits.
 
-Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Seul le propriétaire invite par e-mail et choisit les droits d'espace ; `collections_read` est le seul droit présélectionné. Un nouvel envoi à la même adresse invalide le lien précédent. Le propriétaire ou l'administrateur système peut consulter les membres, changer leurs droits (finances incluses) et retirer un membre, mais ne peut ni se donner des droits à lui-même ni retirer le propriétaire. Les changements et retraits sont audités. Aucun rôle intermédiaire de gestionnaire n'est prévu pour l'instant.
+Les espaces personnels peuvent être créés et listés par l'API et le client Windows. Seul le propriétaire invite par e-mail et choisit les droits d'espace ; `collections_read` est le seul droit présélectionné. Un nouvel envoi à la même adresse invalide le lien précédent. Le propriétaire ou l'administrateur système peut consulter les membres, changer leurs droits (finances incluses) et retirer un membre, mais ne peut ni se donner des droits à lui-même ni retirer le propriétaire. Les changements et retraits sont audités.
+
+Le propriétaire (ou un administrateur système) peut déléguer la gestion des membres à un membre existant : ce gestionnaire liste les membres, change les droits d'un autre membre et retire un autre membre, dans la limite des droits qu'il détient lui-même. Il ne peut ni inviter, ni nommer un autre gestionnaire, ni modifier ou retirer le propriétaire, ni transférer la propriété. La nomination et la révocation sont auditées, et retirer un membre supprime sa délégation.
 
 ## Attribution des numéros d'inventaire
 
@@ -146,6 +148,9 @@ Ces routes ne sont montées que si `COLLECTIONOPS_DATABASE_URL` est défini. San
 | `GET` | `/api/v1/spaces/{space_id}/members` | Propriétaire ou administrateur : lister les membres et leurs droits |
 | `PUT` | `/api/v1/spaces/{space_id}/members/{account_id}/permissions` | Propriétaire ou administrateur : remplacer les droits explicites d'un autre membre |
 | `DELETE` | `/api/v1/spaces/{space_id}/members/{account_id}` | Propriétaire ou administrateur : retirer un membre autre que le propriétaire |
+| `GET` | `/api/v1/spaces/{space_id}/managers` | Propriétaire, administrateur ou gestionnaire : lister les gestionnaires délégués |
+| `PUT` | `/api/v1/spaces/{space_id}/managers/{account_id}` | Propriétaire ou administrateur : nommer un membre gestionnaire |
+| `DELETE` | `/api/v1/spaces/{space_id}/managers/{account_id}` | Propriétaire ou administrateur : retirer la délégation d'un gestionnaire |
 | `POST` | `/api/v1/spaces/{space_id}/ownership` | Propriétaire : transférer la propriété à un membre existant (`{"new_owner_account_id":"..."}`) |
 | `GET` | `/api/v1/spaces/{space_id}/my-permissions` | Membre : lire ses droits explicites dans l'espace |
 
@@ -244,6 +249,7 @@ Un [brouillon du cahier des charges fonctionnel V1](docs/product/cahier-des-char
 - [ADR-0003 — Identifiants locaux et secrets de session](docs/architecture/ADR-0003-local-credentials-and-sessions.md)
 - [ADR-0004 — Autorisation par espace](docs/architecture/ADR-0004-space-authorization.md)
 - [Modèle conceptuel du premier lot V1 — brouillon](docs/architecture/data-model-v1-draft.md)
+- [Décisions métier ouvertes V1 — propositions à valider](docs/product/decisions-open-v1-draft.md)
 - [Première migration MariaDB du noyau](backend/migrations/202609220001_core.sql)
 - [Brouillon SQL des invitations](docs/schema/invitations-draft.sql)
 - [Contrat API v1 des premières opérations sur les objets — brouillon](docs/api/v1-core-draft.md)

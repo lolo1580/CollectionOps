@@ -18,6 +18,9 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- [Décisions métier ouvertes V1](docs/product/decisions-open-v1-draft.md) : propositions détaillées pour D06, D07, D09 et D10, avec critères d'acceptation, à valider avant toute implémentation.
+- Délégation de gestion des membres par espace : `GET`, `PUT` et `DELETE /api/v1/spaces/{space_id}/managers[/{account_id}]`, nomination par le propriétaire ou l'administrateur, audit dans `space_manager_events`, suppression de la délégation avec le membre.
+- Un gestionnaire peut lister les membres, modifier les droits d'un autre membre et le retirer, mais ne peut pas toucher au propriétaire, nommer un autre gestionnaire ni accorder un droit qu'il ne détient pas ; tests HTTP de ces refus et du nettoyage en cascade.
 - Recherche d'inventaire étendue au nom, à la description et aux références historique et technique, les jokers restant littéraux ; test HTTP d'une correspondance dans la description et dans une référence.
 - Transfert de propriété d'un espace par `POST /api/v1/spaces/{space_id}/ownership`, réservé au propriétaire actuel et à un membre existant ; l'ancien propriétaire reste membre et le nouveau ne reçoit aucun droit implicite.
 - Table `space_ownership_events` et tests HTTP de l'autorisation, du refus d'un non-membre, du transfert vers soi-même et de l'audit.
@@ -25,7 +28,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Migration `item_relations` et tests HTTP/MariaDB de l'isolation entre espaces, des révisions, de la lecture entrante/sortante, de la corbeille et du nettoyage au transfert.
 - Renommage des catégories et des champs personnalisés par `PATCH`, sans changer le parent, le type de valeur ni les identifiants stables ; un nom déjà pris reçoit `409`, une définition d'un autre espace `404`, et les valeurs enregistrées restent attachées au même champ.
 - En-tête `Location` sur la création d'objet, pointant vers `/api/v1/items/{item_id}`.
-- Client Windows : renommage d'une catégorie et d'un champ, gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant) et transfert de la propriété avec confirmation ; les vérifications de contrat passent à 34.
+- Client Windows : renommage d'une catégorie et d'un champ, gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant), transfert de la propriété avec confirmation et nomination ou retrait d'un gestionnaire délégué ; les vérifications de contrat passent à 35.
 - Client Windows : première refonte de la vue Collection autour de l'inventaire, avec liste et fiche côte à côte ; organisation, partage et acquisitions sont repliés en outils secondaires.
 - Client Windows : navigation distincte pour Inventaire, Acquisitions, Organisation et Partage ; aperçu explicite des futurs modules Documents et Finances sans fausse persistance.
 - Modification des envies, vendeurs et offres sans montants, avec révisions optimistes, refus des éditions périmées, contrôle des droits et édition dans le client Windows.
@@ -120,6 +123,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 ### Sécurité
 
 - Seul le propriétaire actuel peut transférer la propriété d'un espace, et uniquement au profit d'un membre existant ; le nouveau propriétaire ne reçoit aucun droit implicite et l'opération est auditée.
+- Un gestionnaire délégué ne peut pas toucher au propriétaire, nommer un autre gestionnaire ni accorder un droit qu'il ne détient pas ; sa délégation ne lui donne aucun droit de collection ou financier.
 - Aucune permission globale ne peut être enregistrée comme droit d'espace ; les tentatives sont refusées avant écriture.
 - Un membre ne peut pas élargir ses propres droits, et le propriétaire ne peut pas être retiré de son espace.
 - Les droits d'espace sont relus depuis la base à chaque opération, de sorte qu'un droit retiré cesse d'agir immédiatement.
