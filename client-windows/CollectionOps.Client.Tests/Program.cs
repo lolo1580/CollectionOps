@@ -6,6 +6,7 @@ await RejectInsecureRemoteServer();
 await AllowPrivateLanHttpOnlyWithOptIn();
 await ChangingLanModeClearsSession();
 await RejectUnexpectedHealth();
+await CheckDatabaseReadiness();
 await ClearExpiredSession();
 await RejectMalformedJson();
 await ReadCollectionWithSession();
@@ -31,7 +32,8 @@ await AssignGroupsAndFilterInventory();
 await RenameAndDeleteEmptyGroup();
 await ReadAcquisitionPermissionsAndWishes();
 await CreateVendorAndOfferWithoutAmounts();
-Console.WriteLine("SessionApi: 29 checks passed.");
+await UpdateAcquisitionProspectsWithRevision();
+Console.WriteLine("SessionApi: 31 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -77,6 +79,17 @@ static async Task RejectUnexpectedHealth()
     using var api = new SessionApi(handler);
     api.Configure("http://127.0.0.1:8080");
     await ExpectAsync<InvalidOperationException>(() => api.CheckHealthAsync());
+}
+
+static async Task CheckDatabaseReadiness()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.OK, """{"status":"ready"}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    Assert(await api.CheckHealthAsync() == "Serveur disponible" &&
+           handler.LastPath == "/api/v1/health/ready",
+        "The client must check database readiness rather than process health.");
 }
 
 static async Task ClearExpiredSession()
@@ -479,7 +492,7 @@ static async Task ReadAcquisitionPermissionsAndWishes()
     handler.Enqueue(HttpStatusCode.OK, """{"permissions":["acquisitions_read"]}""");
     var spaceId = Guid.NewGuid();
     handler.Enqueue(HttpStatusCode.OK,
-        $"{{\"wishes\":[{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"title\":\"Casque M1\",\"search_notes\":\"Bon état\",\"created_at\":\"2026-09-23T10:00:00Z\"}}]}}");
+        $"{{\"wishes\":[{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"title\":\"Casque M1\",\"search_notes\":\"Bon état\",\"revision\":\"1\",\"created_at\":\"2026-09-23T10:00:00Z\"}}]}}");
     using var api = new SessionApi(handler);
     api.Configure("http://127.0.0.1:8080");
     await api.SignInAsync("reader@example.org", "password");
@@ -499,21 +512,56 @@ static async Task CreateVendorAndOfferWithoutAmounts()
     var wishId = Guid.NewGuid();
     var vendorId = Guid.NewGuid();
     handler.Enqueue(HttpStatusCode.Created,
-        $"{{\"id\":\"{vendorId}\",\"space_id\":\"{spaceId}\",\"name\":\"Marchand A\",\"website_url\":null,\"created_at\":\"2026-09-23T10:00:00Z\"}}");
+        $"{{\"id\":\"{vendorId}\",\"space_id\":\"{spaceId}\",\"name\":\"Marchand A\",\"website_url\":null,\"revision\":\"1\",\"created_at\":\"2026-09-23T10:00:00Z\"}}");
     handler.Enqueue(HttpStatusCode.Created,
-        $"{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"wish_id\":\"{wishId}\",\"vendor_id\":\"{vendorId}\",\"title\":\"Casque original\",\"source_url\":null,\"notes\":null,\"created_at\":\"2026-09-23T10:00:00Z\"}}");
+        $"{{\"id\":\"{Guid.NewGuid()}\",\"space_id\":\"{spaceId}\",\"wish_id\":\"{wishId}\",\"vendor_id\":\"{vendorId}\",\"title\":\"Casque original\",\"source_url\":null,\"notes\":null,\"revision\":\"1\",\"created_at\":\"2026-09-23T10:00:00Z\"}}");
     using var api = new SessionApi(handler);
     api.Configure("http://127.0.0.1:8080");
     await api.SignInAsync("writer@example.org", "password");
     var vendor = await api.CreateVendorAsync(spaceId, "Marchand A", null);
-    Assert(vendor.Id == vendorId && handler.LastBody?.Contains("\"name\":\"Marchand A\"") == true,
+    Assert(vendor.Id == vendorId && vendor.Revision == "1" &&
+        handler.LastBody?.Contains("\"name\":\"Marchand A\"") == true,
         "Vendor creation must target the chosen space.");
     var offer = await api.CreateOfferAsync(spaceId, wishId, vendorId, "Casque original", null, null);
-    Assert(offer.VendorId == vendorId && handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes/{wishId}/offers",
+    Assert(offer.VendorId == vendorId && offer.Revision == "1" &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes/{wishId}/offers",
         "Offer creation must link the wish and vendor.");
     Assert(handler.LastBody?.Contains("\"vendor_id\"") == true &&
         !handler.LastBody.Contains("price") && !handler.LastBody.Contains("amount"),
         "This first acquisition slice must not send financial amounts.");
+}
+
+static async Task UpdateAcquisitionProspectsWithRevision()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var wishId = Guid.NewGuid();
+    var vendorId = Guid.NewGuid();
+    var offerId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{wishId}\",\"space_id\":\"{spaceId}\",\"title\":\"Casque révisé\",\"revision\":\"2\",\"created_at\":\"2026-09-24T10:00:00Z\"}}");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{vendorId}\",\"space_id\":\"{spaceId}\",\"name\":\"Marchand révisé\",\"revision\":\"3\",\"created_at\":\"2026-09-24T10:00:00Z\"}}");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{offerId}\",\"space_id\":\"{spaceId}\",\"wish_id\":\"{wishId}\",\"vendor_id\":\"{vendorId}\",\"title\":\"Offre révisée\",\"revision\":\"4\",\"created_at\":\"2026-09-24T10:00:00Z\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("writer@example.org", "password");
+    var wish = await api.UpdateWishAsync(spaceId, wishId, "Casque révisé", null, "1");
+    Assert(wish.Revision == "2" && handler.LastMethod == HttpMethod.Patch &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes/{wishId}" &&
+        handler.LastBody?.Contains("\"expected_revision\":\"1\"") == true,
+        "Wish editing must carry the current revision.");
+    var vendor = await api.UpdateVendorAsync(spaceId, vendorId, "Marchand révisé", null, "2");
+    Assert(vendor.Revision == "3" && handler.LastPath == $"/api/v1/spaces/{spaceId}/vendors/{vendorId}" &&
+        handler.LastBody?.Contains("\"expected_revision\":\"2\"") == true,
+        "Vendor editing must target the chosen vendor and carry its revision.");
+    var offer = await api.UpdateOfferAsync(spaceId, wishId, offerId, vendorId, "Offre révisée", null, null, "3");
+    Assert(offer.Revision == "4" && handler.LastPath == $"/api/v1/spaces/{spaceId}/wishes/{wishId}/offers/{offerId}" &&
+        handler.LastBody?.Contains("\"expected_revision\":\"3\"") == true &&
+        !handler.LastBody.Contains("price") && !handler.LastBody.Contains("amount"),
+        "Offer editing must keep the optimistic revision and remain non-financial.");
 }
 
 static void Assert(bool condition, string message)

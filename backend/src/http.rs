@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Extension, Json, Router,
@@ -373,12 +374,21 @@ async fn liveness() -> Json<HealthResponse> {
     path = "/api/v1/health/ready",
     tag = "system",
     responses(
-        (status = 200, description = "Le service est prêt à recevoir des requêtes", body = HealthResponse)
+        (status = 200, description = "Le service et sa base configurée sont prêts", body = HealthResponse),
+        (status = 503, description = "La base configurée ne répond pas", body = HealthResponse)
     )
 )]
-async fn readiness() -> Json<HealthResponse> {
-    // External dependencies will be added here when MariaDB and document storage are introduced.
-    health_payload("ready")
+async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    if let Some(database) = state.database.as_deref() {
+        let check = sqlx::query("SELECT 1").execute(database.pool());
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(2), check).await,
+            Ok(Ok(_))
+        ) {
+            return (StatusCode::SERVICE_UNAVAILABLE, health_payload("not_ready"));
+        }
+    }
+    (StatusCode::OK, health_payload("ready"))
 }
 
 #[utoipa::path(
@@ -685,9 +695,10 @@ fn acquisition_error(error: &AcquisitionError, instance: &str) -> ApiError {
         AcquisitionError::DuplicateVendor => {
             ApiError::conflict(instance, "Ce fournisseur existe déjà.", "duplicate_vendor")
         }
-        AcquisitionError::WishNotFound | AcquisitionError::VendorNotFound => {
-            ApiError::resource_not_found(instance)
-        }
+        AcquisitionError::WishNotFound
+        | AcquisitionError::VendorNotFound
+        | AcquisitionError::OfferNotFound => ApiError::resource_not_found(instance),
+        AcquisitionError::RevisionConflict => ApiError::revision_conflict(instance),
         _ => ApiError::internal(instance),
     }
 }
@@ -698,6 +709,7 @@ pub struct WishResponse {
     pub space_id: Uuid,
     pub title: String,
     pub search_notes: Option<String>,
+    pub revision: String,
     pub created_at: String,
 }
 impl From<Wish> for WishResponse {
@@ -707,6 +719,7 @@ impl From<Wish> for WishResponse {
             space_id: value.space_id,
             title: value.title,
             search_notes: value.search_notes,
+            revision: value.revision.to_string(),
             created_at: value.created_at.to_rfc3339(),
         }
     }
@@ -720,6 +733,12 @@ pub struct CreateWishRequest {
     pub title: String,
     pub search_notes: Option<String>,
 }
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateWishRequest {
+    pub title: String,
+    pub search_notes: Option<String>,
+    pub expected_revision: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct VendorResponse {
@@ -727,6 +746,7 @@ pub struct VendorResponse {
     pub space_id: Uuid,
     pub name: String,
     pub website_url: Option<String>,
+    pub revision: String,
     pub created_at: String,
 }
 impl From<Vendor> for VendorResponse {
@@ -736,6 +756,7 @@ impl From<Vendor> for VendorResponse {
             space_id: value.space_id,
             name: value.name,
             website_url: value.website_url,
+            revision: value.revision.to_string(),
             created_at: value.created_at.to_rfc3339(),
         }
     }
@@ -749,6 +770,12 @@ pub struct CreateVendorRequest {
     pub name: String,
     pub website_url: Option<String>,
 }
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateVendorRequest {
+    pub name: String,
+    pub website_url: Option<String>,
+    pub expected_revision: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct OfferResponse {
@@ -759,6 +786,7 @@ pub struct OfferResponse {
     pub title: String,
     pub source_url: Option<String>,
     pub notes: Option<String>,
+    pub revision: String,
     pub created_at: String,
 }
 impl From<Offer> for OfferResponse {
@@ -771,6 +799,7 @@ impl From<Offer> for OfferResponse {
             title: value.title,
             source_url: value.source_url,
             notes: value.notes,
+            revision: value.revision.to_string(),
             created_at: value.created_at.to_rfc3339(),
         }
     }
@@ -785,6 +814,14 @@ pub struct CreateOfferRequest {
     pub title: String,
     pub source_url: Option<String>,
     pub notes: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateOfferRequest {
+    pub vendor_id: Uuid,
+    pub title: String,
+    pub source_url: Option<String>,
+    pub notes: Option<String>,
+    pub expected_revision: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -2042,6 +2079,42 @@ async fn create_wish(
     Ok((StatusCode::CREATED, Json(wish.into())))
 }
 
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/wishes/{wish_id}", tag = "acquisitions",
+    request_body = UpdateWishRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("wish_id" = Uuid, Path, description = "Envie")),
+    responses((status = 200, body = WishResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn update_wish(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, wish_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateWishRequest>,
+) -> Result<Json<WishResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let revision = parse_group_revision(&payload.expected_revision, uri.path())?;
+    let wish = db
+        .update_wish(
+            space_id,
+            wish_id,
+            &payload.title,
+            payload.search_notes.as_deref(),
+            revision,
+        )
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok(Json(wish.into()))
+}
+
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/vendors", tag = "acquisitions",
     params(("space_id" = Uuid, Path, description = "Espace")),
     responses((status = 200, body = VendorListResponse), (status = 401, body = ProblemDetails),
@@ -2095,6 +2168,42 @@ async fn create_vendor(
         .await
         .map_err(|error| acquisition_error(&error, uri.path()))?;
     Ok((StatusCode::CREATED, Json(vendor.into())))
+}
+
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/vendors/{vendor_id}", tag = "acquisitions",
+    request_body = UpdateVendorRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("vendor_id" = Uuid, Path, description = "Vendeur")),
+    responses((status = 200, body = VendorResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn update_vendor(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, vendor_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateVendorRequest>,
+) -> Result<Json<VendorResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let revision = parse_group_revision(&payload.expected_revision, uri.path())?;
+    let vendor = db
+        .update_vendor(
+            space_id,
+            vendor_id,
+            &payload.name,
+            payload.website_url.as_deref(),
+            revision,
+        )
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok(Json(vendor.into()))
 }
 
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/wishes/{wish_id}/offers", tag = "acquisitions",
@@ -2159,6 +2268,46 @@ async fn create_offer(
         .await
         .map_err(|error| acquisition_error(&error, uri.path()))?;
     Ok((StatusCode::CREATED, Json(offer.into())))
+}
+
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/wishes/{wish_id}/offers/{offer_id}", tag = "acquisitions",
+    request_body = UpdateOfferRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"),
+        ("wish_id" = Uuid, Path, description = "Envie"),
+        ("offer_id" = Uuid, Path, description = "Offre")),
+    responses((status = 200, body = OfferResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn update_offer(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, wish_id, offer_id)): Path<(Uuid, Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateOfferRequest>,
+) -> Result<Json<OfferResponse>, ApiError> {
+    let db = acquisitions_db(
+        &state,
+        &uri,
+        &headers,
+        space_id,
+        Permission::AcquisitionsWrite,
+    )
+    .await?;
+    let revision = parse_group_revision(&payload.expected_revision, uri.path())?;
+    let offer = db
+        .update_offer(
+            space_id,
+            wish_id,
+            offer_id,
+            payload.vendor_id,
+            &payload.title,
+            payload.source_url.as_deref(),
+            payload.notes.as_deref(),
+            revision,
+        )
+        .await
+        .map_err(|error| acquisition_error(&error, uri.path()))?;
+    Ok(Json(offer.into()))
 }
 
 #[utoipa::path(get, path = "/api/v1/admin/spaces", tag = "sharing",
@@ -3400,10 +3549,13 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         my_space_permissions,
         list_wishes,
         create_wish,
+        update_wish,
         list_vendors,
         create_vendor,
+        update_vendor,
         list_offers,
         create_offer,
+        update_offer,
         list_admin_spaces,
         create_space,
         list_categories,
@@ -3455,9 +3607,9 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         LoginRequest,
         LoginResponse,
         SpaceResponse, SpaceListResponse, SpacePermissionsResponse, CreateSpaceRequest,
-        WishResponse, WishListResponse, CreateWishRequest,
-        VendorResponse, VendorListResponse, CreateVendorRequest,
-        OfferResponse, OfferListResponse, CreateOfferRequest,
+        WishResponse, WishListResponse, CreateWishRequest, UpdateWishRequest,
+        VendorResponse, VendorListResponse, CreateVendorRequest, UpdateVendorRequest,
+        OfferResponse, OfferListResponse, CreateOfferRequest, UpdateOfferRequest,
         CategoryResponse, CategoryListResponse, CreateCategoryRequest,
         CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest,
         LocationResponse, LocationListResponse, CreateLocationRequest,
@@ -3622,12 +3774,24 @@ fn acquisition_routes() -> Router<AppState> {
             get(list_wishes).post(create_wish),
         )
         .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/wishes/{{wish_id}}"),
+            axum::routing::patch(update_wish),
+        )
+        .route(
             &format!("{API_PREFIX}/spaces/{{space_id}}/vendors"),
             get(list_vendors).post(create_vendor),
         )
         .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/vendors/{{vendor_id}}"),
+            axum::routing::patch(update_vendor),
+        )
+        .route(
             &format!("{API_PREFIX}/spaces/{{space_id}}/wishes/{{wish_id}}/offers"),
             get(list_offers).post(create_offer),
+        )
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/wishes/{{wish_id}}/offers/{{offer_id}}"),
+            axum::routing::patch(update_offer),
         )
 }
 

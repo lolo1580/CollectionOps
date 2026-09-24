@@ -64,6 +64,8 @@ Points d’entrée initiaux :
 
 Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
 
+`/health/live` indique uniquement que le processus tourne. `/health/ready` vérifie MariaDB par une requête bornée à deux secondes lorsque la base est configurée : il renvoie `503` avec `status: not_ready` si elle ne répond plus. Sans base configurée, le mode limité aux métadonnées reste `ready`. Le bouton **Enregistrer et tester** du client Windows utilise cette vérification de disponibilité.
+
 Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Les routes de collection vérifient le jeton de session puis l'adhésion et les droits explicites dans chaque espace. `/api/v1/session` reste une route de test avec principal injecté ; les routes métier utilisent directement les sessions persistées.
 
 Les mots de passe utilisent Argon2id et les sessions des jetons opaques de 256 bits ; seule leur empreinte est conservée en base. Les routes de connexion, révocation et expiration sont implémentées.
@@ -105,6 +107,8 @@ Chaque fiche possède aussi une description (10 000 caractères maximum), une r�
 ## Préparation des acquisitions
 
 Un espace peut tenir une liste d'envies, un répertoire de vendeurs et des offres rattachées à une envie et à un vendeur du même espace. Cette première tranche enregistre seulement les intitulés, notes et liens : **aucun prix, montant ou achat effectif**. Les liens doivent être HTTP(S) et ne peuvent pas contenir d'identifiants. La lecture exige `acquisitions_read`, la création `acquisitions_write` ; les droits de collection ou financiers ne sont pas implicites. Le propriétaire reçoit ces deux droits lors de la création de l'espace, et la migration les ajoute aux propriétaires des espaces existants. Le client Windows affiche les envies, vendeurs et offres selon les droits effectifs du membre.
+
+Les trois fiches peuvent aussi être modifiées depuis le client Windows. Le serveur exige la révision courante de chaque fiche et refuse une modification périmée avec `409` ; il ne supprime aucune de ces entrées dans cette tranche.
 
 ## Archivage et corbeille
 
@@ -171,6 +175,20 @@ Les consignes détaillées figurent dans [CONTRIBUTING.md](CONTRIBUTING.md).
 Le test de migration et de provisionnement peut être exécuté sur une base MariaDB de test dédiée avec `COLLECTIONOPS_TEST_DATABASE_URL=mysql://... cargo test -p collectionops-backend --test database`. Sans cette variable, ces tests sont ignorés.
 
 ## Configuration
+
+### Installation ou mise à jour du backend sur le LXC
+
+Le script [scripts/install-lxc.sh](scripts/install-lxc.sh) installe l'API depuis la branche `main` de GitHub sur un LXC Debian/Ubuntu avec systemd. Il exige `git`, `curl`, `cargo` et la chaîne de compilation Rust déjà installés, ainsi qu'un fichier `/etc/collectionops/dev.env` existant contenant au minimum `COLLECTIONOPS_DATABASE_URL=mysql://...` et `COLLECTIONOPS_BIND=0.0.0.0:8080`. Il **ne crée ni base, ni compte MariaDB, ni secret** et ne remplace pas ce fichier. Sur une installation neuve, créer le fichier avec les droits `600` avant de lancer le script.
+
+Après publication du script sur GitHub, l'exécuter sur le LXC en root :
+
+```bash
+curl -fsSLo /tmp/collectionops-install-lxc.sh https://raw.githubusercontent.com/lolo1580/CollectionOps/main/scripts/install-lxc.sh
+less /tmp/collectionops-install-lxc.sh
+bash /tmp/collectionops-install-lxc.sh
+```
+
+Le script demande de confirmer qu'une sauvegarde MariaDB a été vérifiée, car les migrations appliquées au démarrage ne sont pas réversibles automatiquement. Il compile la version publiée, conserve la configuration et le service existants, sauvegarde temporairement l'ancien exécutable et vérifie `/api/v1/health/ready`. Si la vérification échoue, il restaure l'ancien exécutable ; **cela ne restaure pas le schéma MariaDB**. Après l'installation, vérifier aussi depuis Windows `http://192.168.30.60:8080/api/v1/health/ready` avant d'utiliser le client. Ne pas employer cette adresse HTTP hors du réseau de développement.
 
 | Variable | Rôle | Défaut |
 |---|---|---|

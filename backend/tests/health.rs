@@ -77,6 +77,57 @@ async fn readiness_endpoint_reports_ready_without_external_dependencies() {
 }
 
 #[tokio::test]
+async fn readiness_tracks_the_database_without_affecting_liveness() {
+    let Ok(url) = std::env::var("COLLECTIONOPS_TEST_DATABASE_URL") else {
+        return;
+    };
+    let database = collectionops_backend::Database::connect_and_migrate(&url)
+        .await
+        .expect("test database must be available");
+    let pool = database.pool().clone();
+    let router = collectionops_backend::app_with_database(database);
+
+    let ready = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+    assert_eq!(response_json(ready).await["status"], "ready");
+
+    pool.close().await;
+    let unavailable = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response_json(unavailable).await["status"], "not_ready");
+
+    let live = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(live.status(), StatusCode::OK);
+    assert_eq!(response_json(live).await["status"], "alive");
+}
+
+#[tokio::test]
 async fn unknown_route_returns_problem_details() {
     let response = collectionops_backend::app()
         .oneshot(

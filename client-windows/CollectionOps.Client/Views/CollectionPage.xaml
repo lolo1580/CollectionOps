@@ -123,7 +123,10 @@
             </StackPanel>
 
             <StackPanel x:Name="AcquisitionsPanel" Spacing="8" Visibility="Collapsed">
-                <TextBlock Text="Acquisitions · recherches et offres" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+                <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,12,0,0">
+                    <TextBlock Text="Acquisitions · recherches et offres" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Button x:Name="RefreshAcquisitionsButton" Content="Actualiser" Click="OnRefreshAcquisitions" />
+                </StackPanel>
                 <TextBlock Text="Cette première tranche ne contient aucun prix ni montant financier." TextWrapping="Wrap" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <TextBox x:Name="NewWishTitle" Header="Objet recherché" Width="300" MaxLength="255" />
@@ -132,13 +135,23 @@
                 </StackPanel>
                 <ListView x:Name="Wishes" Height="130" DisplayMemberPath="Title" SelectionChanged="OnWishSelected" />
                 <TextBlock x:Name="SelectedWishNotes" Text="Choisissez une envie pour voir ses offres." TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBox x:Name="EditWishTitle" Header="Modifier l'envie sélectionnée" Width="300" MaxLength="255" />
+                    <TextBox x:Name="EditWishNotes" Header="Notes de recherche" Width="350" MaxLength="10000" />
+                    <Button x:Name="SaveWishButton" Content="Enregistrer" Click="OnSaveWish" VerticalAlignment="Bottom" />
+                </StackPanel>
                 <TextBlock Text="Fournisseurs" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,8,0,0" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <TextBox x:Name="NewVendorName" Header="Nom" Width="260" MaxLength="255" />
                     <TextBox x:Name="NewVendorWebsite" Header="Site web (facultatif)" Width="350" MaxLength="2048" />
                     <Button x:Name="CreateVendorButton" Content="Ajouter le fournisseur" Click="OnCreateVendor" VerticalAlignment="Bottom" />
                 </StackPanel>
-                <ListView x:Name="Vendors" Height="100" DisplayMemberPath="Label" SelectionMode="None" />
+                <ListView x:Name="Vendors" Height="100" DisplayMemberPath="Label" SelectionChanged="OnVendorSelected" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBox x:Name="EditVendorName" Header="Modifier le fournisseur sélectionné" Width="260" MaxLength="255" />
+                    <TextBox x:Name="EditVendorWebsite" Header="Site web" Width="350" MaxLength="2048" />
+                    <Button x:Name="SaveVendorButton" Content="Enregistrer" Click="OnSaveVendor" VerticalAlignment="Bottom" />
+                </StackPanel>
                 <TextBlock Text="Offres de l'envie sélectionnée" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,8,0,0" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <TextBox x:Name="NewOfferTitle" Header="Titre de l'offre" Width="280" MaxLength="255" />
@@ -149,7 +162,16 @@
                     <TextBox x:Name="NewOfferUrl" Header="Lien de l'offre (facultatif)" Width="360" MaxLength="2048" />
                     <TextBox x:Name="NewOfferNotes" Header="Notes (facultatif)" Width="360" MaxLength="10000" />
                 </StackPanel>
-                <ListView x:Name="WishOffers" Height="150" DisplayMemberPath="Label" SelectionMode="None" />
+                <ListView x:Name="WishOffers" Height="150" DisplayMemberPath="Label" SelectionChanged="OnOfferSelected" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBox x:Name="EditOfferTitle" Header="Modifier l'offre sélectionnée" Width="280" MaxLength="255" />
+                    <ComboBox x:Name="EditOfferVendorChoices" Header="Fournisseur" Width="280" DisplayMemberPath="Name" />
+                    <Button x:Name="SaveOfferButton" Content="Enregistrer" Click="OnSaveOffer" VerticalAlignment="Bottom" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBox x:Name="EditOfferUrl" Header="Lien de l'offre" Width="360" MaxLength="2048" />
+                    <TextBox x:Name="EditOfferNotes" Header="Notes" Width="360" MaxLength="10000" />
+                </StackPanel>
             </StackPanel>
 
             <TextBlock Text="Inventaire" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />

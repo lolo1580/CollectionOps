@@ -6,12 +6,14 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
+- La disponibilité `/health/ready` reflète désormais la connexion MariaDB après le démarrage (`503` en cas de panne), sans faire échouer la sonde de vie ; le client Windows teste cette disponibilité plutôt que la seule activité du processus.
 - La connexion renvoie l'identifiant et le nom du compte authentifié dans `principal`, au lieu d'un identifiant aléatoire et d'un nom vide.
 - Le client Windows efface son état de connexion après un refus `401` sur les sessions et affiche une erreur contrôlée pour une réponse JSON invalide ou un état de santé inattendu.
 - Quatre vérifications automatisées du client de session couvrent l'adresse serveur, l'état de santé, l'expiration de session et une réponse JSON invalide ; elles s'exécutent aussi dans la CI Windows.
 
 ### Ajouté
 
+- Modification des envies, vendeurs et offres sans montants, avec révisions optimistes, refus des éditions périmées, contrôle des droits et édition dans le client Windows.
 - Client Windows : option temporaire pour joindre directement une adresse IPv4 privée en HTTP pendant le développement, désactivée par défaut et limitée aux plages privées ; changement de serveur ou de mode invalidant la session locale.
 - Envies, vendeurs et offres repérées par espace, sans montants, avec droits d'acquisition explicites, API et écran Windows ; migration des droits des propriétaires existants et tests d'isolation.
 - Renommage des séries et regroupements avec contrôle de révision ; suppression des seuls ensembles vides, confirmée dans le client Windows.
