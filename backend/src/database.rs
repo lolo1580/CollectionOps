@@ -1299,8 +1299,6 @@ impl Database {
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(filters.location_id.map(|id| id.to_string()))
-        .bind(filters.group_id.map(|id| id.to_string()))
-        .bind(filters.group_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(space_id.to_string())
@@ -1312,6 +1310,8 @@ impl Database {
         .bind(filters.category_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(filters.location_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
         .bind(limit)
         .fetch_all(&self.pool)
         .await

@@ -1,11 +1,13 @@
 using CollectionOps.Client.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 
 namespace CollectionOps.Client.Views;
 
 public sealed partial class CollectionPage : Page
 {
+    private static Guid? _lastSpaceId;
     private SessionApi Api => App.Sessions;
     private CollectionSpace? ActiveSpace => Spaces.SelectedItem as CollectionSpace;
     private InventoryItem? ActiveItem => Items.SelectedItem as InventoryItem;
@@ -21,6 +23,8 @@ public sealed partial class CollectionPage : Page
     private bool _canWriteAcquisitions;
     private bool _loadingWishes;
     private bool _loadingOffers;
+    private bool _viewInitialized;
+    private bool _changingFilters;
     private IReadOnlyList<AcquisitionVendor> _vendors = [];
     private bool _loadingCategories;
     private Guid? _categoryFilter;
@@ -37,6 +41,7 @@ public sealed partial class CollectionPage : Page
     public CollectionPage()
     {
         InitializeComponent();
+        _viewInitialized = true;
         UpdateButtons();
         if (Api.IsSignedIn)
         {
@@ -54,28 +59,47 @@ public sealed partial class CollectionPage : Page
 
     private async void OnStateFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!Api.IsSignedIn) return;
+        // The default ComboBoxItem is selected during InitializeComponent. Its event can
+        // run before the rest of the page's named controls have been created.
+        if (!_viewInitialized || _changingFilters || !Api.IsSignedIn) return;
         _stateFilter = (StateFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "active";
         await RefreshItemsAsync();
     }
 
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        var section = e.Parameter as string ?? "inventory";
+        InventorySection.Visibility = section == "inventory" ? Visibility.Visible : Visibility.Collapsed;
+        AcquisitionsSection.Visibility = section == "acquisitions" ? Visibility.Visible : Visibility.Collapsed;
+        OrganizationSection.Visibility = section == "organization" ? Visibility.Visible : Visibility.Collapsed;
+        SharingSection.Visibility = section == "sharing" ? Visibility.Visible : Visibility.Collapsed;
+        (SectionTitle.Text, SectionIntro.Text) = section switch
+        {
+            "acquisitions" => ("Acquisitions", "Suivez les objets recherchés, les vendeurs et leurs offres."),
+            "organization" => ("Organisation", "Définissez catégories, champs, emplacements et regroupements pour cet espace."),
+            "sharing" => ("Partage", "Gérez les invitations et les droits des membres de cet espace."),
+            _ => ("Inventaire", "Retrouvez vos objets et ouvrez leur fiche."),
+        };
+    }
+
     private async void OnCategoryFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingCategories || !Api.IsSignedIn) return;
+        if (_loadingCategories || _changingFilters || !Api.IsSignedIn) return;
         _categoryFilter = (CategoryFilter.SelectedItem as CategoryOption)?.Id;
         await RefreshItemsAsync();
     }
 
     private async void OnLocationFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingLocations || !Api.IsSignedIn) return;
+        if (_loadingLocations || _changingFilters || !Api.IsSignedIn) return;
         _locationFilter = (LocationFilter.SelectedItem as LocationOption)?.Id;
         await RefreshItemsAsync();
     }
 
     private async void OnGroupFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingGroups || !Api.IsSignedIn) return;
+        if (_loadingGroups || _changingFilters || !Api.IsSignedIn) return;
         _groupFilter = (GroupFilter.SelectedItem as GroupOption)?.Id;
         await RefreshItemsAsync();
     }
@@ -95,7 +119,8 @@ public sealed partial class CollectionPage : Page
             if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state ||
                 _categoryFilter != categoryId || _locationFilter != locationId || _groupFilter != groupId) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
-            items.AddRange(page.Items);
+            var seenIds = items.Select(item => item.Id).ToHashSet();
+            items.AddRange(page.Items.Where(item => seenIds.Add(item.Id)));
             Items.ItemsSource = items;
             _nextCursor = page.NextCursor;
         });
@@ -103,6 +128,7 @@ public sealed partial class CollectionPage : Page
     private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSpaces) return;
+        _lastSpaceId = ActiveSpace?.Id;
         _categoryFilter = null;
         _locationFilter = null;
         _groupFilter = null;
@@ -123,6 +149,8 @@ public sealed partial class CollectionPage : Page
 
     private async void OnItemSelected(object sender, SelectionChangedEventArgs e)
     {
+        if (!_viewInitialized) return;
+        ObjectDetailsPanel.Visibility = ActiveItem is null ? Visibility.Collapsed : Visibility.Visible;
         SelectedItemName.Text = ActiveItem is { } item
             ? $"{item.Name} — n° {item.InventoryNumber} (révision {item.Revision}, {item.StateLabel})"
             : "Sélectionnez un objet dans l'inventaire.";
@@ -264,18 +292,56 @@ public sealed partial class CollectionPage : Page
 
     private async void OnCreateItem(object sender, RoutedEventArgs e)
     {
-        if (ActiveSpace is null || string.IsNullOrWhiteSpace(NewItemName.Text))
+        if (ActiveSpace is not { } space)
         {
-            ShowStatus("Choisissez un espace et saisissez un nom d'objet.", InfoBarSeverity.Warning);
+            ShowStatus("Choisissez d'abord un espace.", InfoBarSeverity.Warning);
             return;
         }
-        var spaceId = ActiveSpace.Id;
+        var nameBox = new TextBox { Header = "Nom de l'objet", MaxLength = 255, PlaceholderText = "Ex. : Maquette de char" };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Ajouter un objet à l'inventaire",
+            Content = nameBox,
+            PrimaryButtonText = "Ajouter",
+            CloseButtonText = "Annuler",
+            DefaultButton = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = false,
+        };
+        nameBox.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(nameBox.Text);
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        var name = nameBox.Text.Trim();
         await RunAsync(async () =>
         {
-            await Api.CreateItemAsync(spaceId, NewItemName.Text.Trim());
-            NewItemName.Text = string.Empty;
+            var created = await Api.CreateItemAsync(space.Id, name);
+            _changingFilters = true;
+            try
+            {
+                _search = string.Empty;
+                SearchText.Text = string.Empty;
+                _stateFilter = "active";
+                StateFilter.SelectedIndex = 0;
+                _categoryFilter = null;
+                CategoryFilter.SelectedIndex = 0;
+                _locationFilter = null;
+                LocationFilter.SelectedIndex = 0;
+                _groupFilter = null;
+                GroupFilter.SelectedIndex = 0;
+            }
+            finally { _changingFilters = false; }
             await RefreshItemsCoreAsync();
-            ShowStatus("Objet ajouté à l'inventaire.", InfoBarSeverity.Success);
+            var visibleItems = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
+            var selected = visibleItems.FirstOrDefault(candidate => candidate.Id == created.Id);
+            if (selected is null)
+            {
+                visibleItems.Insert(0, created);
+                Items.ItemsSource = visibleItems;
+                Items.Visibility = Visibility.Visible;
+                InventoryEmptyState.Visibility = Visibility.Collapsed;
+                selected = created;
+            }
+            Items.SelectedItem = selected;
+            ShowStatus("Objet ajouté ; sa fiche est ouverte.", InfoBarSeverity.Success);
         });
     }
 
@@ -417,6 +483,7 @@ public sealed partial class CollectionPage : Page
         _canReadAcquisitions = permissions.Contains("acquisitions_read");
         _canWriteAcquisitions = permissions.Contains("acquisitions_write");
         AcquisitionsPanel.Visibility = _canReadAcquisitions ? Visibility.Visible : Visibility.Collapsed;
+        AcquisitionsNoAccess.Visibility = _canReadAcquisitions ? Visibility.Collapsed : Visibility.Visible;
         UpdateButtons();
     }
 
@@ -618,7 +685,7 @@ public sealed partial class CollectionPage : Page
         });
     }
 
-    private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id));
+    private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id ?? _lastSpaceId));
 
     private async Task LoadSpacesAsync(Guid? selectedId)
     {
@@ -631,6 +698,7 @@ public sealed partial class CollectionPage : Page
             Spaces.SelectedItem = _spaces.FirstOrDefault(space => space.Id == selectedId) ?? _spaces.FirstOrDefault();
         }
         finally { _loadingSpaces = false; }
+        _lastSpaceId = ActiveSpace?.Id;
         if (previousSpaceId != ActiveSpace?.Id)
         {
             _categoryFilter = null;
@@ -647,6 +715,9 @@ public sealed partial class CollectionPage : Page
         if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
+            Items.Visibility = Visibility.Collapsed;
+            InventoryEmptyState.Text = "Créez un espace pour commencer votre collection.";
+            InventoryEmptyState.Visibility = Visibility.Visible;
             ShowStatus("Aucun espace visible. Créez votre premier espace.", InfoBarSeverity.Informational);
         }
         else await RefreshItemsCoreAsync();
@@ -665,9 +736,23 @@ public sealed partial class CollectionPage : Page
             var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter,
                 categoryId: _categoryFilter, locationId: _locationFilter, groupId: _groupFilter);
             Items.ItemsSource = page.Items;
+            Items.Visibility = page.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             _nextCursor = page.NextCursor;
+            InventoryEmptyState.Text = _search.Length > 0 || _categoryFilter is not null ||
+                _locationFilter is not null || _groupFilter is not null || _stateFilter != "active"
+                ? "Aucun objet ne correspond à ces filtres. Essayez de les modifier."
+                : "Aucun objet dans cet espace. Cliquez sur Ajouter un objet pour commencer.";
+            InventoryEmptyState.Visibility = page.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
-        else Items.ItemsSource = null;
+        else
+        {
+            Items.ItemsSource = null;
+            Items.Visibility = Visibility.Collapsed;
+            InventoryEmptyState.Text = ActiveSpace is null
+                ? "Choisissez ou créez un espace pour commencer."
+                : "Vous n'avez pas accès à l'inventaire de cet espace.";
+            InventoryEmptyState.Visibility = Visibility.Visible;
+        }
         Items.SelectedItem = null;
         TransferHistory.ItemsSource = null;
         StateAuditHistory.ItemsSource = null;
@@ -1112,6 +1197,8 @@ public sealed partial class CollectionPage : Page
 
     private void UpdateButtons()
     {
+        SharingNoAccess.Visibility = SharingPanel.Visibility == Visibility.Visible || MembersPanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed : Visibility.Visible;
         RefreshSpacesButton.IsEnabled = Api.IsSignedIn;
         CreateSpaceButton.IsEnabled = Api.IsSignedIn;
         CreateItemButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;

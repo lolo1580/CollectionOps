@@ -6,6 +6,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
+- Backend : correction de l'ordre des paramètres SQL de la recherche d'inventaire ; un objet créé peut désormais apparaître dans la liste de son espace et les filtres retrouver leurs résultats.
+- Client Windows : le filtre d'état de la page Collection n'essaie plus de charger l'inventaire avant la fin de l'initialisation de l'écran après une connexion.
+- Client Windows : une collection vide affiche une aide de départ et masque la fiche tant qu'aucun objet n'est sélectionné ; l'accueil propose un accès direct à l'inventaire.
+- Client Windows : l'ajout d'un objet passe par une fenêtre dédiée ouverte depuis le bouton « Ajouter un objet » ; l'inventaire montre directement la liste et ouvre la nouvelle fiche après création.
 - La disponibilité `/health/ready` reflète désormais la connexion MariaDB après le démarrage (`503` en cas de panne), sans faire échouer la sonde de vie ; le client Windows teste cette disponibilité plutôt que la seule activité du processus.
 - La connexion renvoie l'identifiant et le nom du compte authentifié dans `principal`, au lieu d'un identifiant aléatoire et d'un nom vide.
 - Le client Windows efface son état de connexion après un refus `401` sur les sessions et affiche une erreur contrôlée pour une réponse JSON invalide ou un état de santé inattendu.
@@ -13,6 +17,8 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Client Windows : première refonte de la vue Collection autour de l'inventaire, avec liste et fiche côte à côte ; organisation, partage et acquisitions sont repliés en outils secondaires.
+- Client Windows : navigation distincte pour Inventaire, Acquisitions, Organisation et Partage ; aperçu explicite des futurs modules Documents et Finances sans fausse persistance.
 - Modification des envies, vendeurs et offres sans montants, avec révisions optimistes, refus des éditions périmées, contrôle des droits et édition dans le client Windows.
 - Client Windows : option temporaire pour joindre directement une adresse IPv4 privée en HTTP pendant le développement, désactivée par défaut et limitée aux plages privées ; changement de serveur ou de mode invalidant la session locale.
 - Envies, vendeurs et offres repérées par espace, sans montants, avec droits d'acquisition explicites, API et écran Windows ; migration des droits des propriétaires existants et tests d'isolation.

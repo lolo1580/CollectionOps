@@ -1,0 +1,25 @@
+<Page
+    x:Class="CollectionOps.Client.Views.FutureModulePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <StackPanel Padding="32" Spacing="20" MaxWidth="980" HorizontalAlignment="Left">
+            <TextBlock x:Name="ModuleTitle" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock x:Name="ModuleDescription" Style="{StaticResource BodyLargeTextBlockStyle}" TextWrapping="Wrap" />
+            <TextBlock Text="Aperçu de l'interface — aucune donnée n'est encore enregistrée dans ce module."
+                       TextWrapping="Wrap" Opacity="0.7" />
+            <StackPanel x:Name="DocumentsPreview" Spacing="14" Visibility="Collapsed">
+                <TextBlock Text="Bibliothèque documentaire" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock Text="Les photographies et documents seront rattachés à une fiche d'objet, avec versions et droits d'accès."
+                           TextWrapping="Wrap" />
+                <TextBlock Text="Fiche d'objet → Photos · Documents · Historique des versions" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel x:Name="FinancePreview" Spacing="14" Visibility="Collapsed">
+                <TextBlock Text="Suivi financier" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock Text="Les achats, estimations, budgets et sorties auront leurs propres droits, séparés de la lecture de l'inventaire."
+                           TextWrapping="Wrap" />
+                <TextBlock Text="Acquisitions → Montants · Estimations · Budget · Historique" TextWrapping="Wrap" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

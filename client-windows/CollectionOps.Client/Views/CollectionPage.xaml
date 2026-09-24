@@ -4,19 +4,31 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:services="using:CollectionOps.Client.Services">
     <ScrollViewer>
-        <StackPanel Padding="32" Spacing="16" MaxWidth="900" HorizontalAlignment="Left">
-            <TextBlock Text="Collection" Style="{StaticResource TitleTextBlockStyle}" />
-            <TextBlock Text="Choisissez un espace pour consulter son inventaire. Connectez-vous d'abord dans Compte." TextWrapping="Wrap" />
+        <Grid Padding="32" RowSpacing="20" MinWidth="1000" MaxWidth="1480" HorizontalAlignment="Left">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0" Spacing="12">
+            <TextBlock x:Name="SectionTitle" Text="Inventaire" Style="{StaticResource TitleTextBlockStyle}" />
+            <TextBlock x:Name="SectionIntro" Text="Retrouvez vos objets et ouvrez leur fiche." TextWrapping="Wrap" />
             <InfoBar x:Name="StatusBar" IsOpen="False" IsClosable="True" />
 
-            <TextBlock Text="Mes espaces" Style="{StaticResource SubtitleTextBlockStyle}" />
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="RefreshSpacesButton" Content="Actualiser" Click="OnRefreshSpaces" />
-                <TextBox x:Name="NewSpaceName" PlaceholderText="Nom du nouvel espace" Width="280" />
-                <Button x:Name="CreateSpaceButton" Content="Créer un espace" Click="OnCreateSpace" />
-            </StackPanel>
+            <TextBlock Text="Espace de travail" Style="{StaticResource SubtitleTextBlockStyle}" />
             <ComboBox x:Name="Spaces" Header="Espace actif" Width="400" HorizontalAlignment="Left"
                       DisplayMemberPath="Name" SelectionChanged="OnSpaceSelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="RefreshSpacesButton" Content="Actualiser les espaces" Click="OnRefreshSpaces" />
+                <Expander Header="Créer un espace" IsExpanded="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8" Padding="8">
+                        <TextBox x:Name="NewSpaceName" PlaceholderText="Nom du nouvel espace" Width="280" />
+                        <Button x:Name="CreateSpaceButton" Content="Créer" Click="OnCreateSpace" />
+                    </StackPanel>
+                </Expander>
+            </StackPanel>
+            </StackPanel>
+
+            <StackPanel x:Name="OrganizationSection" Grid.Row="1" Spacing="12" Visibility="Collapsed">
 
             <TextBlock Text="Catégories et champs" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock Text="Les catégories peuvent être imbriquées. Un champ défini sur une catégorie parente est hérité par ses sous-catégories." TextWrapping="Wrap" />
@@ -63,6 +75,11 @@
                 <Button x:Name="RenameGroupButton" Content="Renommer" Click="OnRenameGroup" VerticalAlignment="Bottom" />
                 <Button x:Name="DeleteGroupButton" Content="Supprimer si vide" Click="OnDeleteGroup" VerticalAlignment="Bottom" />
             </StackPanel>
+            </StackPanel>
+
+            <StackPanel x:Name="SharingSection" Grid.Row="1" Spacing="12" Visibility="Collapsed">
+            <TextBlock x:Name="SharingNoAccess" Text="Le partage est géré par le propriétaire ou l'administrateur de cet espace."
+                       TextWrapping="Wrap" Visibility="Visible" />
 
             <StackPanel x:Name="SharingPanel" Spacing="8" Visibility="Collapsed">
                 <TextBlock Text="Partager cet espace" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
@@ -121,6 +138,11 @@
                     <Button x:Name="RefreshMembersButton" Content="Actualiser" Click="OnRefreshMembers" />
                 </StackPanel>
             </StackPanel>
+            </StackPanel>
+
+            <StackPanel x:Name="AcquisitionsSection" Grid.Row="1" Spacing="12" Visibility="Collapsed">
+            <TextBlock x:Name="AcquisitionsNoAccess" Text="Vous n'avez pas de droit de lecture des acquisitions dans cet espace."
+                       TextWrapping="Wrap" Visibility="Visible" />
 
             <StackPanel x:Name="AcquisitionsPanel" Spacing="8" Visibility="Collapsed">
                 <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,12,0,0">
@@ -173,49 +195,67 @@
                     <TextBox x:Name="EditOfferNotes" Header="Notes" Width="360" MaxLength="10000" />
                 </StackPanel>
             </StackPanel>
+            </StackPanel>
 
-            <TextBlock Text="Inventaire" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBox x:Name="NewItemName" PlaceholderText="Nom du nouvel objet" Width="280" />
-                <Button x:Name="CreateItemButton" Content="Ajouter à l'inventaire" Click="OnCreateItem" />
-                <Button x:Name="RefreshItemsButton" Content="Actualiser" Click="OnRefreshItems" />
+            <Grid x:Name="InventorySection" Grid.Row="1" ColumnSpacing="24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="420" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="12">
+
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="Objets" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                <Button x:Name="CreateItemButton" Content="Ajouter un objet" Click="OnCreateItem"
+                        Style="{StaticResource AccentButtonStyle}" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBox x:Name="SearchText" PlaceholderText="Rechercher dans le nom" Width="280" />
+                <TextBox x:Name="SearchText" PlaceholderText="Rechercher dans le nom" Width="235" />
                 <Button x:Name="SearchButton" Content="Rechercher" Click="OnSearch" />
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <ComboBox x:Name="StateFilter" Header="État" Width="180" SelectionChanged="OnStateFilterChanged">
+            <Expander Header="Filtres (état, catégorie, emplacement, série)" IsExpanded="False">
+                <StackPanel Spacing="8" Padding="0,8,0,8">
+            <StackPanel Spacing="8">
+                <ComboBox x:Name="StateFilter" Header="État" Width="380" SelectionChanged="OnStateFilterChanged">
                     <ComboBoxItem Content="Actifs" Tag="active" IsSelected="True" />
                     <ComboBoxItem Content="Archivés" Tag="archived" />
                     <ComboBoxItem Content="Corbeille" Tag="trashed" />
                     <ComboBoxItem Content="Tous" Tag="all" />
                 </ComboBox>
-                <ComboBox x:Name="CategoryFilter" Header="Catégorie" Width="260"
+                <ComboBox x:Name="CategoryFilter" Header="Catégorie" Width="380"
                           DisplayMemberPath="Label" SelectionChanged="OnCategoryFilterChanged" />
-                <ComboBox x:Name="LocationFilter" Header="Emplacement" Width="260"
+                <ComboBox x:Name="LocationFilter" Header="Emplacement" Width="380"
                           DisplayMemberPath="Label" SelectionChanged="OnLocationFilterChanged" />
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <ComboBox x:Name="GroupFilter" Header="Série / regroupement" Width="260"
+            <StackPanel Spacing="8">
+                <ComboBox x:Name="GroupFilter" Header="Série / regroupement" Width="380"
                           DisplayMemberPath="Label" SelectionChanged="OnGroupFilterChanged" />
             </StackPanel>
-            <ListView x:Name="Items" SelectionMode="Single" SelectionChanged="OnItemSelected">
+                </StackPanel>
+            </Expander>
+            <ListView x:Name="Items" SelectionMode="Single" MinHeight="300" Visibility="Collapsed" SelectionChanged="OnItemSelected">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="services:InventoryItem">
-                        <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,8,0,8">
-                            <TextBlock Text="{x:Bind InventoryNumber}" Width="80" FontWeight="SemiBold" />
-                            <TextBlock Text="{x:Bind Name}" Width="400" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{x:Bind StateLabel}" Width="90" Opacity="0.8" />
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,8">
+                            <TextBlock Text="{x:Bind InventoryNumber}" Width="60" FontWeight="SemiBold" />
+                            <TextBlock Text="{x:Bind Name}" Width="235" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{x:Bind StateLabel}" Width="85" Opacity="0.8" />
                         </StackPanel>
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+            <TextBlock x:Name="InventoryEmptyState" Text="Aucun objet ici. Cliquez sur Ajouter un objet pour commencer."
+                       TextWrapping="Wrap" Visibility="Collapsed" Opacity="0.75" />
             <Button x:Name="LoadMoreButton" Content="Charger la suite" Click="OnLoadMore" HorizontalAlignment="Left" />
+            <Button x:Name="RefreshItemsButton" Content="Actualiser la liste" Click="OnRefreshItems" HorizontalAlignment="Left" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Spacing="12">
 
             <TextBlock Text="Fiche de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="SelectedItemName" Text="Sélectionnez un objet dans l'inventaire." TextWrapping="Wrap" />
             <TextBlock x:Name="SelectedItemDetails" Text="" TextWrapping="Wrap" Opacity="0.7" />
+            <StackPanel x:Name="ObjectDetailsPanel" Spacing="12" Visibility="Collapsed">
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="EditedItemName" Header="Nom" Width="360" />
                 <Button x:Name="SaveItemNameButton" Content="Enregistrer le nom" Click="OnSaveItemName" VerticalAlignment="Bottom" />
@@ -233,6 +273,8 @@
                 <Button x:Name="TrashItemButton" Content="Mettre à la corbeille" Click="OnTrashItem" />
                 <Button x:Name="RestoreItemButton" Content="Restaurer" Click="OnRestoreItem" />
             </StackPanel>
+            <Expander Header="Classement et champs" IsExpanded="False">
+                <StackPanel Spacing="12" Padding="0,8,0,8">
             <TextBlock Text="Classement et champs de l'objet" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="AssignedCategories" Text="Aucune catégorie." TextWrapping="Wrap" />
             <TextBlock Text="Cochez les catégories à conserver ou à ajouter. Les valeurs des champs encore applicables sont préservées ; les autres restent seulement dans l'historique." TextWrapping="Wrap" />
@@ -247,6 +289,10 @@
                 <TextBox x:Name="FieldValue" Header="Valeur du champ sélectionné" Width="350" />
                 <Button x:Name="SaveFieldValueButton" Content="Enregistrer" Click="OnSaveFieldValue" VerticalAlignment="Bottom" />
             </StackPanel>
+                </StackPanel>
+            </Expander>
+            <Expander Header="Emplacement et déplacements" IsExpanded="False">
+                <StackPanel Spacing="12" Padding="0,8,0,8">
             <TextBlock Text="Emplacement courant et déplacements" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="CurrentLocationText" Text="Aucun emplacement." TextWrapping="Wrap" />
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -263,6 +309,10 @@
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+                </StackPanel>
+            </Expander>
+            <Expander Header="Transfert et historique" IsExpanded="False">
+                <StackPanel Spacing="12" Padding="0,8,0,8">
             <TextBlock Text="Transfert et historique" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <ComboBox x:Name="DestinationSpaces" Header="Espace de destination" Width="320" DisplayMemberPath="Name" SelectionChanged="OnDestinationSelected" />
@@ -296,6 +346,11 @@
             </StackPanel>
             <TextBlock Text="Pour un objet déjà classé, choisissez au moins une catégorie de l'espace de destination avant le transfert." TextWrapping="Wrap" />
             <ListView x:Name="DestinationCategoryChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
-        </StackPanel>
+                </StackPanel>
+            </Expander>
+            </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Grid>
     </ScrollViewer>
 </Page>
