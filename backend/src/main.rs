@@ -1,10 +1,11 @@
-use std::error::Error;
+use std::{env, error::Error, path::Path};
 
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 use collectionops_backend::{
-    AppConfig, Database, PasswordService, SmtpDelivery, app, app_with_database_and_mail,
+    AppConfig, Database, DocumentStore, PasswordService, SmtpDelivery, app,
+    app_with_database_mail_documents,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -18,6 +19,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let config = AppConfig::from_env()?;
     let mail = SmtpDelivery::from_env()?;
+    let documents = if let Ok(path) = env::var("COLLECTIONOPS_DOCUMENTS_DIR") {
+        Some(DocumentStore::new(Path::new(&path))?)
+    } else {
+        warn!("COLLECTIONOPS_DOCUMENTS_DIR is not set: document routes are disabled");
+        None
+    };
 
     // Persistence is optional at this stage, but a configured database is a hard startup
     // requirement: starting without it would advertise readiness the service cannot honour.
@@ -42,7 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if mail.is_none() {
             warn!("SMTP is not configured: space invitations are disabled");
         }
-        app_with_database_and_mail(database, mail)
+        app_with_database_mail_documents(database, mail, documents)
     } else {
         warn!("COLLECTIONOPS_DATABASE_URL is not set: starting without persistence");
         app()

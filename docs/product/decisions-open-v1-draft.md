@@ -24,7 +24,7 @@ Ce document transforme les décisions ouvertes en propositions concrètes, avec 
 3. Aucun total, aucune liste et aucun export ne révèle un montant inaccessible.
 4. Un objet transféré ne conserve pas les montants/documents de l'espace source.
 
-**À trancher :** les documents suivent-ils l'objet lors d'un transfert (copie explicite) ou restent-ils dans l'espace source ? Proposition : ils restent, avec un parcours de copie/partage explicite.
+**Validé :** les documents restent dans l'espace source après un transfert. Un parcours de copie/partage explicite reste à concevoir.
 
 ## D07 — Règles financières : devise, taux, arrondi, valeur sans estimation
 
@@ -84,7 +84,7 @@ Ce document transforme les décisions ouvertes en propositions concrètes, avec 
 3. Un document dépassant la taille, le type ou le quota est refusé avec un message explicite.
 4. Un document dédupliqué n'accorde jamais un accès à un objet dont l'appelant n'a pas les droits.
 
-**À trancher :** taille maximale des fichiers (proposition 50 Mo), quota par objet (proposition 50), et formats exacts des colonnes CSV.
+**Validé :** taille maximale de 50 Mo (50 000 000 octets) par fichier et quota de 50 documents actifs par objet et par espace. Les formats exacts des colonnes CSV restent à trancher.
 
 ## Synthèse à valider
 

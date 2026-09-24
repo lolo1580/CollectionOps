@@ -19,6 +19,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Première tranche documentaire : stockage local privé configuré par `COLLECTIONOPS_DOCUMENTS_DIR`, métadonnées en MariaDB, ajout/liste/téléchargement/retrait logique de JPEG, PNG, WebP et PDF, droits documentaires explicites, limites 50 Mo et 50 documents actifs par objet et espace. Les fichiers restent dans l'espace source après transfert ; la page Documents du client Windows permet de les gérer depuis la fiche de l'objet.
 - [Décisions métier ouvertes V1](docs/product/decisions-open-v1-draft.md) : propositions détaillées pour D06, D07, D09 et D10, avec critères d'acceptation, à valider avant toute implémentation.
 - Délégation de gestion des membres par espace : `GET`, `PUT` et `DELETE /api/v1/spaces/{space_id}/managers[/{account_id}]`, nomination par le propriétaire ou l'administrateur, audit dans `space_manager_events`, suppression de la délégation avec le membre.
 - Un gestionnaire peut lister les membres, modifier les droits d'un autre membre et le retirer, mais ne peut pas toucher au propriétaire, nommer un autre gestionnaire ni accorder un droit qu'il ne détient pas ; tests HTTP de ces refus et du nettoyage en cascade.

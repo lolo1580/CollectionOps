@@ -39,7 +39,41 @@ await ReadAndReplaceItemRelations();
 await TransferSpaceOwnership();
 await UpdateAcquisitionProspectsWithRevision();
 await ReadAndManageSpaceManagers();
-Console.WriteLine("SessionApi: 37 checks passed.");
+await ReadUploadDownloadDeleteDocuments();
+Console.WriteLine("SessionApi: 38 checks passed.");
+
+static async Task ReadUploadDownloadDeleteDocuments()
+{
+    var handler = new FakeHandler();
+    var spaceId = Guid.NewGuid();
+    var itemId = Guid.NewGuid();
+    var documentId = Guid.NewGuid();
+    var path = $"/api/v1/spaces/{spaceId}/items/{itemId}/documents";
+    var metadata = $"{{\"id\":\"{documentId}\",\"item_id\":\"{itemId}\",\"space_id\":\"{spaceId}\",\"original_name\":\"Photo été.pdf\",\"media_type\":\"application/pdf\",\"byte_size\":4,\"sha256\":\"hash\",\"uploaded_by_account_id\":\"{Guid.NewGuid()}\",\"created_at\":\"2026-09-24T10:00:00Z\"}}";
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    handler.Enqueue(HttpStatusCode.OK, $"{{\"documents\":[{metadata}]}}");
+    handler.Enqueue(HttpStatusCode.Created, metadata);
+    handler.EnqueueBytes(HttpStatusCode.OK, "%PDF"u8.ToArray(), "application/pdf");
+    handler.Enqueue(HttpStatusCode.NoContent, "");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("root@example.org", "password");
+    var documents = await api.GetDocumentsAsync(spaceId, itemId);
+    Assert(documents.Count == 1 && documents[0].Id == documentId && handler.LastPath == path,
+        "Document listing must parse the API response for the selected item.");
+    using var content = new MemoryStream("%PDF"u8.ToArray());
+    var uploaded = await api.UploadDocumentAsync(spaceId, itemId, "Photo été.pdf", "application/pdf", content, 4);
+    Assert(uploaded.Id == documentId && handler.LastPath == path && handler.LastMethod == HttpMethod.Post &&
+        handler.LastDocumentName == Uri.EscapeDataString("Photo été.pdf") &&
+        handler.LastContentType == "application/pdf" && handler.LastToken == "secret",
+        "Document upload must send the name, MIME type, session and bytes.");
+    var bytes = await api.DownloadDocumentAsync(spaceId, itemId, documentId);
+    Assert(bytes.SequenceEqual("%PDF"u8.ToArray()) && handler.LastPath == $"{path}/{documentId}",
+        "Document download must return the selected file.");
+    await api.DeleteDocumentAsync(spaceId, itemId, documentId);
+    Assert(handler.LastPath == $"{path}/{documentId}" && handler.LastMethod == HttpMethod.Delete,
+        "Document removal must target the selected file.");
+}
 
 static async Task LongItemNameCanBeCheckedForDuplicates()
 {
@@ -739,11 +773,22 @@ sealed class FakeHandler : HttpMessageHandler
     public string? LastPath { get; private set; }
     public string? LastQuery { get; private set; }
     public string? LastBody { get; private set; }
+    public string? LastDocumentName { get; private set; }
+    public string? LastContentType { get; private set; }
 
     public void Enqueue(HttpStatusCode status, string body) => _responses.Enqueue(new HttpResponseMessage(status)
     {
         Content = new StringContent(body, Encoding.UTF8, "application/json"),
     });
+
+    public void EnqueueBytes(HttpStatusCode status, byte[] body, string mediaType) =>
+        _responses.Enqueue(new HttpResponseMessage(status)
+        {
+            Content = new ByteArrayContent(body)
+            {
+                Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mediaType) },
+            },
+        });
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -757,6 +802,9 @@ sealed class FakeHandler : HttpMessageHandler
         LastPath = request.RequestUri?.AbsolutePath;
         LastQuery = request.RequestUri?.Query;
         LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        LastDocumentName = request.Headers.TryGetValues("x-document-name", out var documentNames)
+            ? documentNames.Single() : null;
+        LastContentType = request.Content?.Headers.ContentType?.MediaType;
         return _responses.Dequeue();
     }
 }

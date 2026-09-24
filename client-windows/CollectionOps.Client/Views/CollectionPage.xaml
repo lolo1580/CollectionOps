@@ -271,6 +271,28 @@
             <TextBlock x:Name="SelectedItemName" Text="Sélectionnez un objet dans l'inventaire." TextWrapping="Wrap" />
             <TextBlock x:Name="SelectedItemDetails" Text="" TextWrapping="Wrap" Opacity="0.7" />
             <StackPanel x:Name="ObjectDetailsPanel" Spacing="12" Visibility="Collapsed">
+            <Expander x:Name="DocumentsExpander" Header="Photos et documents" IsExpanded="False">
+                <StackPanel Spacing="10" Padding="0,8,0,8">
+                    <TextBlock x:Name="DocumentsMessage" Text="Aucun document pour cet objet." TextWrapping="Wrap" />
+                    <ListView x:Name="ItemDocuments" SelectionMode="Single" Height="180" SelectionChanged="OnDocumentSelected">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="services:CollectionDocument">
+                                <StackPanel Margin="0,6,0,6">
+                                    <TextBlock Text="{x:Bind OriginalName}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{x:Bind Details}" Opacity="0.7" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="AddDocumentButton" Content="Ajouter un fichier" Click="OnAddDocument" />
+                        <Button x:Name="SaveDocumentButton" Content="Enregistrer et ouvrir" Click="OnSaveDocument" />
+                        <Button x:Name="RemoveDocumentButton" Content="Retirer" Click="OnRemoveDocument" />
+                        <Button x:Name="RefreshDocumentsButton" Content="Actualiser" Click="OnRefreshDocuments" />
+                    </StackPanel>
+                    <TextBlock Text="JPG, PNG, WebP ou PDF · 50 Mo maximum · 50 fichiers actifs par objet et espace. Les documents restent dans l'espace source après transfert." TextWrapping="Wrap" Opacity="0.7" />
+                </StackPanel>
+            </Expander>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="EditedItemName" Header="Nom" Width="360" />
                 <Button x:Name="SaveItemNameButton" Content="Enregistrer le nom" Click="OnSaveItemName" VerticalAlignment="Bottom" />

@@ -1252,7 +1252,12 @@ impl Database {
         .await
         .map_err(DatabaseError::Query)?;
 
-        for permission in [Permission::AcquisitionsRead, Permission::AcquisitionsWrite] {
+        for permission in [
+            Permission::AcquisitionsRead,
+            Permission::AcquisitionsWrite,
+            Permission::DocumentsRead,
+            Permission::DocumentsWrite,
+        ] {
             sqlx::query(
                 "INSERT INTO space_permission_grants (space_id, account_id, permission_code) \
                  VALUES (?, ?, ?)",

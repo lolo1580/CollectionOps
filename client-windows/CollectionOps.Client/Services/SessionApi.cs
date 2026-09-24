@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -9,6 +10,7 @@ namespace CollectionOps.Client.Services;
 public sealed class SessionApi : IDisposable
 {
     private readonly HttpClient _client;
+    private readonly HttpClient _documentClient;
 
     private Uri? _server;
     private string? _token;
@@ -23,9 +25,14 @@ public sealed class SessionApi : IDisposable
 
     public SessionApi(HttpMessageHandler? handler = null)
     {
-        _client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
+        var sharedHandler = handler ?? new HttpClientHandler { AllowAutoRedirect = false };
+        _client = new HttpClient(sharedHandler, disposeHandler: false)
         {
             Timeout = TimeSpan.FromSeconds(15),
+        };
+        _documentClient = new HttpClient(sharedHandler, disposeHandler: true)
+        {
+            Timeout = TimeSpan.FromMinutes(2),
         };
     }
 
@@ -459,6 +466,58 @@ public sealed class SessionApi : IDisposable
         return result.Events;
     }
 
+    private static string DocumentPath(Guid spaceId, Guid itemId) =>
+        $"api/v1/spaces/{spaceId}/items/{itemId}/documents";
+
+    public async Task<IReadOnlyList<CollectionDocument>> GetDocumentsAsync(Guid spaceId, Guid itemId)
+    {
+        var result = await SendJsonAsync<DocumentListResponse>(HttpMethod.Get, DocumentPath(spaceId, itemId));
+        return result.Documents;
+    }
+
+    public async Task<CollectionDocument> UploadDocumentAsync(Guid spaceId, Guid itemId,
+        string fileName, string mediaType, Stream content, long length)
+    {
+        if (length is < 1 or > 50_000_000)
+            throw new ArgumentException("Le fichier doit faire entre 1 octet et 50 Mo.");
+        if (string.IsNullOrWhiteSpace(fileName))
+            throw new ArgumentException("Choisissez un fichier nommé.");
+        using var request = AuthenticatedRequest(HttpMethod.Post, DocumentPath(spaceId, itemId));
+        request.Headers.Add("x-document-name", Uri.EscapeDataString(fileName));
+        request.Content = new StreamContent(content);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+        request.Content.Headers.ContentLength = length;
+        using var response = await _documentClient.SendAsync(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized) SignOut();
+        await EnsureSuccessAsync(response);
+        return await response.Content.ReadFromJsonAsync<CollectionDocument>()
+            ?? throw new InvalidOperationException("Le document créé n'a pas été confirmé par le serveur.");
+    }
+
+    public async Task<byte[]> DownloadDocumentAsync(Guid spaceId, Guid itemId, Guid documentId)
+    {
+        using var request = AuthenticatedRequest(HttpMethod.Get, $"{DocumentPath(spaceId, itemId)}/{documentId}");
+        using var response = await _documentClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        if (response.StatusCode == HttpStatusCode.Unauthorized) SignOut();
+        await EnsureSuccessAsync(response);
+        if (response.Content.Headers.ContentLength is > 50_000_000)
+            throw new InvalidOperationException("Le serveur a renvoyé un document trop volumineux.");
+        await using var source = await response.Content.ReadAsStreamAsync();
+        using var result = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        int count;
+        while ((count = await source.ReadAsync(buffer)) != 0)
+        {
+            if (result.Length + count > 50_000_000)
+                throw new InvalidOperationException("Le serveur a renvoyé un document trop volumineux.");
+            result.Write(buffer, 0, count);
+        }
+        return result.ToArray();
+    }
+
+    public Task DeleteDocumentAsync(Guid spaceId, Guid itemId, Guid documentId) =>
+        SendEmptyAsync(HttpMethod.Delete, $"{DocumentPath(spaceId, itemId)}/{documentId}");
+
     public async Task RevokeAsync(string sessionId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/sessions/{Uri.EscapeDataString(sessionId)}");
@@ -482,7 +541,11 @@ public sealed class SessionApi : IDisposable
         CurrentIsSystemAdmin = false;
     }
 
-    public void Dispose() => _client.Dispose();
+    public void Dispose()
+    {
+        _client.Dispose();
+        _documentClient.Dispose();
+    }
 
     private Uri Endpoint(string path) => _server is null
         ? throw new InvalidOperationException("Indiquez d'abord l'adresse du serveur.")
@@ -793,6 +856,21 @@ public sealed record InventoryItem(
 public sealed record ItemPageResponse(
     [property: JsonPropertyName("items")] List<InventoryItem> Items,
     [property: JsonPropertyName("next_cursor")] string? NextCursor);
+public sealed record CollectionDocument(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("item_id")] Guid ItemId,
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("original_name")] string OriginalName,
+    [property: JsonPropertyName("media_type")] string MediaType,
+    [property: JsonPropertyName("byte_size")] long ByteSize,
+    [property: JsonPropertyName("sha256")] string Sha256,
+    [property: JsonPropertyName("uploaded_by_account_id")] Guid UploadedByAccountId,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+{
+    public string Details => $"{ByteSize / 1_000_000.0:0.##} Mo · {CreatedAt.ToLocalTime():g}";
+}
+public sealed record DocumentListResponse(
+    [property: JsonPropertyName("documents")] List<CollectionDocument> Documents);
 public sealed record InventoryTransfer(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("source_space_id")] Guid SourceSpaceId,

@@ -2,6 +2,9 @@ using CollectionOps.Client.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
+using Windows.Storage.Pickers;
+using Windows.System;
+using WinRT.Interop;
 
 namespace CollectionOps.Client.Views;
 
@@ -21,6 +24,8 @@ public sealed partial class CollectionPage : Page
     private bool _canReadActiveSpace;
     private bool _canReadAcquisitions;
     private bool _canWriteAcquisitions;
+    private bool _canReadDocuments;
+    private bool _canWriteDocuments;
     private bool _loadingWishes;
     private bool _loadingOffers;
     private bool _viewInitialized;
@@ -73,7 +78,8 @@ public sealed partial class CollectionPage : Page
     {
         base.OnNavigatedTo(e);
         var section = e.Parameter as string ?? "inventory";
-        InventorySection.Visibility = section == "inventory" ? Visibility.Visible : Visibility.Collapsed;
+        InventorySection.Visibility = section is "inventory" or "documents" ? Visibility.Visible : Visibility.Collapsed;
+        DocumentsExpander.IsExpanded = section == "documents";
         AcquisitionsSection.Visibility = section == "acquisitions" ? Visibility.Visible : Visibility.Collapsed;
         OrganizationSection.Visibility = section == "organization" ? Visibility.Visible : Visibility.Collapsed;
         SharingSection.Visibility = section == "sharing" ? Visibility.Visible : Visibility.Collapsed;
@@ -82,6 +88,7 @@ public sealed partial class CollectionPage : Page
             "acquisitions" => ("Acquisitions", "Suivez les objets recherchés, les vendeurs et leurs offres."),
             "organization" => ("Organisation", "Définissez catégories, champs, emplacements et regroupements pour cet espace."),
             "sharing" => ("Partage", "Gérez les invitations et les droits des membres de cet espace."),
+            "documents" => ("Documents", "Choisissez un objet pour consulter ses photos et documents."),
             _ => ("Inventaire", "Retrouvez vos objets et ouvrez leur fiche."),
         };
     }
@@ -175,6 +182,8 @@ public sealed partial class CollectionPage : Page
         CurrentLocationText.Text = "Aucun emplacement.";
         LocationHistory.ItemsSource = null;
         ItemRelations.ItemsSource = null;
+        ItemDocuments.ItemsSource = null;
+        DocumentsMessage.Text = _canReadDocuments ? "Aucun document pour cet objet." : "Vous n'avez pas accès aux documents de cet espace.";
         _relations = [];
         RelationTargetChoices.ItemsSource = null;
         _assignedCategoryCount = 0;
@@ -189,6 +198,7 @@ public sealed partial class CollectionPage : Page
             await RefreshItemGroupsAsync();
             await RefreshItemRelationsAsync();
             await RefreshItemLocationAsync();
+            if (_canReadDocuments) await RefreshDocumentsAsync();
             if (CanReadStateAudit) await RefreshStateAuditAsync();
         }
     }
@@ -602,6 +612,10 @@ public sealed partial class CollectionPage : Page
         _canReadActiveSpace = permissions.Contains("collections_read");
         _canReadAcquisitions = permissions.Contains("acquisitions_read");
         _canWriteAcquisitions = permissions.Contains("acquisitions_write");
+        _canReadDocuments = permissions.Contains("documents_read");
+        _canWriteDocuments = permissions.Contains("documents_write");
+        ItemDocuments.ItemsSource = null;
+        DocumentsMessage.Text = _canReadDocuments ? "Aucun document pour cet objet." : "Vous n'avez pas accès aux documents de cet espace.";
         AcquisitionsPanel.Visibility = _canReadAcquisitions ? Visibility.Visible : Visibility.Collapsed;
         AcquisitionsNoAccess.Visibility = _canReadAcquisitions ? Visibility.Collapsed : Visibility.Visible;
         UpdateButtons();
@@ -1421,6 +1435,98 @@ public sealed partial class CollectionPage : Page
         });
     }
 
+    private async void OnRefreshDocuments(object sender, RoutedEventArgs e) => await RefreshDocumentsAsync();
+    private void OnDocumentSelected(object sender, SelectionChangedEventArgs e) => UpdateButtons();
+
+    private Task RefreshDocumentsAsync() => RunAsync(RefreshDocumentsCoreAsync);
+
+    private async Task RefreshDocumentsCoreAsync()
+    {
+        if (ActiveSpace is not { } space || ActiveItem is not { } item || !_canReadDocuments) return;
+        var documents = await Api.GetDocumentsAsync(space.Id, item.Id);
+        if (ActiveSpace?.Id != space.Id || ActiveItem?.Id != item.Id) return;
+        ItemDocuments.ItemsSource = documents;
+        DocumentsMessage.Text = documents.Count == 0 ? "Aucun document pour cet objet." : $"{documents.Count} fichier(s) pour cet objet.";
+    }
+
+    private async void OnAddDocument(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ActiveItem is not { } item || !_canWriteDocuments) return;
+        await RunAsync(async () =>
+        {
+            var picker = new FileOpenPicker();
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(App.MainWindow!));
+            foreach (var extension in new[] { ".jpg", ".jpeg", ".png", ".webp", ".pdf" })
+                picker.FileTypeFilter.Add(extension);
+            var selected = await picker.PickSingleFileAsync();
+            if (selected is null) return;
+            var length = new FileInfo(selected.Path).Length;
+            if (length is < 1 or > 50_000_000)
+                throw new ArgumentException("Le fichier doit faire entre 1 octet et 50 Mo.");
+            var mediaType = Path.GetExtension(selected.Name).ToLowerInvariant() switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                ".pdf" => "application/pdf",
+                _ => throw new ArgumentException("Format de fichier non pris en charge."),
+            };
+            await using var stream = File.OpenRead(selected.Path);
+            await Api.UploadDocumentAsync(space.Id, item.Id, selected.Name, mediaType, stream, length);
+            if (ActiveSpace?.Id == space.Id && ActiveItem?.Id == item.Id)
+            {
+                if (_canReadDocuments) await RefreshDocumentsCoreAsync();
+                ShowStatus("Fichier ajouté à l'objet.", InfoBarSeverity.Success);
+            }
+        });
+    }
+
+    private async void OnSaveDocument(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ActiveItem is not { } item ||
+            ItemDocuments.SelectedItem is not CollectionDocument document || !_canReadDocuments) return;
+        await RunAsync(async () =>
+        {
+            var extension = Path.GetExtension(document.OriginalName).ToLowerInvariant();
+            if (extension is not (".jpg" or ".jpeg" or ".png" or ".webp" or ".pdf"))
+                throw new InvalidOperationException("Extension du document non prise en charge.");
+            var picker = new FileSavePicker();
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(App.MainWindow!));
+            picker.FileTypeChoices.Add("Document", new List<string> { extension });
+            picker.SuggestedFileName = Path.GetFileNameWithoutExtension(document.OriginalName);
+            var destination = await picker.PickSaveFileAsync();
+            if (destination is null) return;
+            var bytes = await Api.DownloadDocumentAsync(space.Id, item.Id, document.Id);
+            await File.WriteAllBytesAsync(destination.Path, bytes);
+            var opened = await Launcher.LaunchFileAsync(destination);
+            ShowStatus(opened ? "Document enregistré et ouvert." : "Document enregistré.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnRemoveDocument(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ActiveItem is not { } item ||
+            ItemDocuments.SelectedItem is not CollectionDocument document || !_canWriteDocuments) return;
+        var dialog = new ContentDialog
+        {
+            Title = "Retirer ce document ?",
+            Content = $"{document.OriginalName} ne sera plus visible dans cet espace.",
+            PrimaryButtonText = "Retirer",
+            CloseButtonText = "Annuler",
+            XamlRoot = XamlRoot,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        await RunAsync(async () =>
+        {
+            await Api.DeleteDocumentAsync(space.Id, item.Id, document.Id);
+            if (ActiveSpace?.Id == space.Id && ActiveItem?.Id == item.Id)
+            {
+                await RefreshDocumentsCoreAsync();
+                ShowStatus("Document retiré.", InfoBarSeverity.Success);
+            }
+        });
+    }
+
     private async Task RunAsync(Func<Task> action)
     {
         RefreshSpacesButton.IsEnabled = false;
@@ -1462,8 +1568,12 @@ public sealed partial class CollectionPage : Page
         AddRelationButton.IsEnabled = false;
         RemoveRelationButton.IsEnabled = false;
         RefreshRelationsButton.IsEnabled = false;
+        AddDocumentButton.IsEnabled = false;
+        SaveDocumentButton.IsEnabled = false;
+        RemoveDocumentButton.IsEnabled = false;
+        RefreshDocumentsButton.IsEnabled = false;
         try { await action(); }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException or IOException or UnauthorizedAccessException)
         {
             ShowStatus(error is TaskCanceledException ? "Le serveur ne répond pas." : error.Message, InfoBarSeverity.Error);
         }
@@ -1527,6 +1637,11 @@ public sealed partial class CollectionPage : Page
         RenameFieldButton.IsEnabled = CreateFieldButton.IsEnabled && CategoryFields.SelectedItem is CategoryFieldDefinition;
         var canEditRelations = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
         RefreshRelationsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        RefreshDocumentsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && _canReadDocuments;
+        AddDocumentButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && _canWriteDocuments && ActiveItem.State != "trashed";
+        SaveDocumentButton.IsEnabled = RefreshDocumentsButton.IsEnabled && ItemDocuments.SelectedItem is CollectionDocument;
+        RemoveDocumentButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && _canWriteDocuments &&
+            ItemDocuments.SelectedItem is CollectionDocument;
         AddRelationButton.IsEnabled = canEditRelations && RelationTargetChoices.SelectedItem is RelationOption;
         RemoveRelationButton.IsEnabled = canEditRelations &&
             ItemRelations.SelectedItem is ItemRelation { Direction: "outgoing" };

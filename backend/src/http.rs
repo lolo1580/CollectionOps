@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::{
     Extension, Json, Router,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
@@ -27,6 +27,7 @@ use crate::{
         ItemStateEvent, ItemTransfer, MemberWithAccount, SessionError, SessionRecord, Space,
         SpaceError, SpaceManagerEntry, SpaceOwnershipTransfer, TransferOutcome,
     },
+    documents::{Document, DocumentError, DocumentStore, MAX_DOCUMENT_BYTES},
     groups::{GroupError, InventoryGroup},
     invitations::{Invitation, InvitationError},
     locations::{ItemLocationEvent, Location, LocationError},
@@ -134,6 +135,7 @@ struct AppState {
     database: Option<Arc<Database>>,
     passwords: Arc<PasswordService>,
     mail: Option<Arc<SmtpDelivery>>,
+    documents: Option<Arc<DocumentStore>>,
 }
 
 struct ApiError {
@@ -299,6 +301,29 @@ impl ApiError {
                 detail: "L'envoi des invitations n'est pas configuré sur ce serveur.".to_owned(),
                 instance: instance.to_owned(),
                 code: "mail_unavailable",
+            },
+        }
+    }
+
+    fn documents_unavailable(instance: &str) -> Self {
+        let mut error = Self::service_unavailable(instance);
+        "Le stockage documentaire n'est pas configuré sur ce serveur."
+            .clone_into(&mut error.problem.detail);
+        error.problem.code = "documents_unavailable";
+        error
+    }
+
+    fn document_too_large(instance: &str) -> Self {
+        let status = StatusCode::PAYLOAD_TOO_LARGE;
+        Self {
+            status,
+            problem: ProblemDetails {
+                type_url: "about:blank",
+                title: "Fichier trop volumineux",
+                status: status.as_u16(),
+                detail: "La limite est de 50 Mo par document.".to_owned(),
+                instance: instance.to_owned(),
+                code: "document_too_large",
             },
         }
     }
@@ -599,6 +624,8 @@ fn collection_principal(subject: Uuid, display_name: String, is_system_admin: bo
             Permission::CollectionsWrite,
             Permission::AcquisitionsRead,
             Permission::AcquisitionsWrite,
+            Permission::DocumentsRead,
+            Permission::DocumentsWrite,
         ]
         .into(),
     }
@@ -2392,14 +2419,18 @@ async fn list_spaces(
         let membership = membership
             .as_ref()
             .map(crate::database::Membership::as_space_membership);
-        if [Permission::CollectionsRead, Permission::AcquisitionsRead]
-            .into_iter()
-            .any(|permission| {
-                principal
-                    .require_space_permission(space.id, membership.as_ref(), permission)
-                    .is_ok()
-            })
-        {
+        if [
+            Permission::CollectionsRead,
+            Permission::AcquisitionsRead,
+            Permission::DocumentsRead,
+            Permission::DocumentsWrite,
+        ]
+        .into_iter()
+        .any(|permission| {
+            principal
+                .require_space_permission(space.id, membership.as_ref(), permission)
+                .is_ok()
+        }) {
             visible.push(space.into());
         }
     }
@@ -4055,6 +4086,266 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
     })
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DocumentResponse {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub space_id: Uuid,
+    pub original_name: String,
+    pub media_type: String,
+    pub byte_size: u64,
+    pub sha256: String,
+    pub uploaded_by_account_id: Uuid,
+    pub created_at: String,
+}
+
+impl From<Document> for DocumentResponse {
+    fn from(value: Document) -> Self {
+        Self {
+            id: value.id,
+            item_id: value.item_id,
+            space_id: value.space_id,
+            original_name: value.original_name,
+            media_type: value.media_type,
+            byte_size: value.byte_size,
+            sha256: value.sha256,
+            uploaded_by_account_id: value.uploaded_by_account_id,
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DocumentListResponse {
+    pub documents: Vec<DocumentResponse>,
+}
+
+fn document_error(error: &DocumentError, instance: &str) -> ApiError {
+    match error {
+        DocumentError::InvalidName => ApiError::invalid_request(
+            instance,
+            "Nom de fichier invalide.",
+            "invalid_document_name",
+        ),
+        DocumentError::InvalidType => ApiError::invalid_request(
+            instance,
+            "Type de fichier refusé ou contenu incohérent.",
+            "invalid_document_type",
+        ),
+        DocumentError::InvalidSize => ApiError::invalid_request(
+            instance,
+            "Le fichier doit faire entre 1 octet et 50 Mo.",
+            "invalid_document_size",
+        ),
+        DocumentError::ItemNotFound
+        | DocumentError::DocumentNotFound
+        | DocumentError::WrongSpace => ApiError::resource_not_found(instance),
+        DocumentError::ItemTrashed => ApiError::conflict(
+            instance,
+            "Restaurez l'objet avant d'ajouter un document.",
+            "item_trashed",
+        ),
+        DocumentError::QuotaExceeded => ApiError::conflict(
+            instance,
+            "Cet objet possède déjà 50 documents actifs dans cet espace.",
+            "document_quota_exceeded",
+        ),
+        DocumentError::Storage => ApiError::internal(instance),
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/items/{item_id}/documents", tag = "documents",
+    params(("space_id" = Uuid, Path, description = "Espace propriétaire des documents"),
+        ("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = DocumentListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 503, body = ProblemDetails)))]
+async fn list_documents(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, item_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Json<DocumentListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let _store = state
+        .documents
+        .as_deref()
+        .ok_or_else(|| ApiError::documents_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::DocumentsRead,
+        uri.path(),
+    )
+    .await?;
+    let documents = db
+        .documents(space_id, item_id)
+        .await
+        .map_err(|error| document_error(&error, uri.path()))?;
+    Ok(Json(DocumentListResponse {
+        documents: documents.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/items/{item_id}/documents", tag = "documents",
+    request_body(content = String, content_type = "application/octet-stream", description = "Octets bruts; Content-Type réel: image/jpeg, image/png, image/webp ou application/pdf"),
+    params(("space_id" = Uuid, Path, description = "Espace courant de l'objet"),
+        ("item_id" = Uuid, Path, description = "Objet"),
+        ("x-document-name" = String, Header, description = "Nom UTF-8 encodé en pourcentage")),
+    responses((status = 201, body = DocumentResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 409, body = ProblemDetails),
+        (status = 413, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn upload_document(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, item_id)): Path<(Uuid, Uuid)>,
+    request: Request,
+) -> Result<(StatusCode, Json<DocumentResponse>), ApiError> {
+    let headers = request.headers().clone();
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let store = state
+        .documents
+        .as_deref()
+        .ok_or_else(|| ApiError::documents_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::DocumentsWrite,
+        uri.path(),
+    )
+    .await?;
+    let encoded_name = headers
+        .get("x-document-name")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "Indiquez x-document-name.",
+                "missing_document_name",
+            )
+        })?;
+    let name = url::form_urlencoded::parse(format!("name={encoded_name}").as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default();
+    let media_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // Authenticate before collecting up to 50 MB into memory.
+    let bytes = to_bytes(request.into_body(), MAX_DOCUMENT_BYTES)
+        .await
+        .map_err(|_| ApiError::document_too_large(uri.path()))?;
+    let document = db
+        .upload_document(
+            store,
+            space_id,
+            item_id,
+            principal.subject,
+            &name,
+            media_type,
+            &bytes,
+        )
+        .await
+        .map_err(|error| document_error(&error, uri.path()))?;
+    Ok((StatusCode::CREATED, Json(document.into())))
+}
+
+#[utoipa::path(get, path = "/api/v1/spaces/{space_id}/items/{item_id}/documents/{document_id}", tag = "documents",
+    params(("space_id" = Uuid, Path, description = "Espace propriétaire"),
+        ("item_id" = Uuid, Path, description = "Objet"),
+        ("document_id" = Uuid, Path, description = "Document")),
+    responses((status = 200, description = "Contenu binaire du document"),
+        (status = 401, body = ProblemDetails), (status = 403, body = ProblemDetails),
+        (status = 404, body = ProblemDetails)))]
+async fn download_document(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, item_id, document_id)): Path<(Uuid, Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let store = state
+        .documents
+        .as_deref()
+        .ok_or_else(|| ApiError::documents_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::DocumentsRead,
+        uri.path(),
+    )
+    .await?;
+    let document = db
+        .document(space_id, item_id, document_id)
+        .await
+        .map_err(|error| document_error(&error, uri.path()))?;
+    let bytes = db
+        .document_bytes(store, &document)
+        .await
+        .map_err(|error| document_error(&error, uri.path()))?;
+    let mut response = Body::from(bytes).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&document.media_type).map_err(|_| ApiError::internal(uri.path()))?,
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"document\""),
+    );
+    Ok(response)
+}
+
+#[utoipa::path(delete, path = "/api/v1/spaces/{space_id}/items/{item_id}/documents/{document_id}", tag = "documents",
+    params(("space_id" = Uuid, Path, description = "Espace propriétaire"),
+        ("item_id" = Uuid, Path, description = "Objet"),
+        ("document_id" = Uuid, Path, description = "Document")),
+    responses((status = 204, description = "Document retiré de la liste, fichier conservé"),
+        (status = 401, body = ProblemDetails), (status = 403, body = ProblemDetails),
+        (status = 404, body = ProblemDetails)))]
+async fn delete_document(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, item_id, document_id)): Path<(Uuid, Uuid, Uuid)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let _store = state
+        .documents
+        .as_deref()
+        .ok_or_else(|| ApiError::documents_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::DocumentsWrite,
+        uri.path(),
+    )
+    .await?;
+    db.delete_document(space_id, item_id, document_id)
+        .await
+        .map_err(|error| document_error(&error, uri.path()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -4129,7 +4420,11 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         transfer_space_ownership,
         list_space_managers,
         appoint_space_manager,
-        revoke_space_manager
+        revoke_space_manager,
+        list_documents,
+        upload_document,
+        download_document,
+        delete_document
     ),
     components(schemas(
         HealthResponse,
@@ -4163,14 +4458,16 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         ItemStateEventResponse, ItemStateEventListResponse,
         IdleTimeout,
         Principal,
-        crate::security::Permission
+        crate::security::Permission,
+        DocumentResponse, DocumentListResponse
     )),
     tags(
         (name = "system", description = "État et métadonnées du service"),
         (name = "authentication", description = "Session et identité applicative"),
         (name = "collection", description = "Espaces et inventaire"),
         (name = "acquisitions", description = "Envies, fournisseurs et offres sans montants"),
-        (name = "sharing", description = "Invitations et partage des espaces")
+        (name = "sharing", description = "Invitations et partage des espaces"),
+        (name = "documents", description = "Documents et photographies par espace")
     )
 )]
 pub struct ApiDoc;
@@ -4221,6 +4518,7 @@ pub fn app() -> Router {
         database: None,
         passwords: Arc::new(PasswordService::default()),
         mail: None,
+        documents: None,
     })
 }
 
@@ -4231,10 +4529,20 @@ pub fn app_with_database(database: Database) -> Router {
 
 /// Builds the persistent router with optional SMTP delivery for invitations.
 pub fn app_with_database_and_mail(database: Database, mail: Option<SmtpDelivery>) -> Router {
+    app_with_database_mail_documents(database, mail, None)
+}
+
+/// Enables document routes when a local storage directory was explicitly configured.
+pub fn app_with_database_mail_documents(
+    database: Database,
+    mail: Option<SmtpDelivery>,
+    documents: Option<DocumentStore>,
+) -> Router {
     app_with_state(AppState {
         database: Some(Arc::new(database)),
         passwords: Arc::new(PasswordService::default()),
         mail: mail.map(Arc::new),
+        documents: documents.map(Arc::new),
     })
 }
 
@@ -4349,6 +4657,20 @@ fn acquisition_routes() -> Router<AppState> {
         )
 }
 
+fn document_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/items/{{item_id}}/documents"),
+            get(list_documents).post(upload_document),
+        )
+        .route(
+            &format!(
+                "{API_PREFIX}/spaces/{{space_id}}/items/{{item_id}}/documents/{{document_id}}"
+            ),
+            get(download_document).delete(delete_document),
+        )
+}
+
 #[allow(clippy::too_many_lines)]
 fn app_with_state(state: AppState) -> Router {
     let authentication = if state.database.is_some() {
@@ -4369,6 +4691,7 @@ fn app_with_state(state: AppState) -> Router {
             .merge(group_routes())
             .merge(relation_routes())
             .merge(acquisition_routes())
+            .merge(document_routes())
             .route(
                 &format!("{API_PREFIX}/admin/spaces"),
                 get(list_admin_spaces),

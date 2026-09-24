@@ -2,6 +2,7 @@ mod acquisitions;
 mod config;
 mod credentials;
 mod database;
+mod documents;
 mod groups;
 mod http;
 mod invitations;
@@ -25,10 +26,13 @@ pub use database::{
     MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership, SessionError, SessionRecord, Space,
     SpaceError, SpaceManagerEntry, SpaceOwnershipTransfer, TransferOutcome,
 };
+pub use documents::{
+    Document, DocumentError, DocumentStore, MAX_DOCUMENT_BYTES, MAX_DOCUMENTS_PER_ITEM,
+};
 pub use groups::{GroupError, InventoryGroup};
 pub use http::{
     API_PREFIX, REQUEST_ID_HEADER, SESSION_TOKEN_HEADER, app, app_with_database,
-    app_with_database_and_mail,
+    app_with_database_and_mail, app_with_database_mail_documents,
 };
 pub use invitations::{Invitation, InvitationError, IssuedInvitation};
 pub use locations::{ItemLocationEvent, Location, LocationError};

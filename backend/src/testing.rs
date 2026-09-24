@@ -14,6 +14,7 @@
 /// Returns the underlying [`sqlx::Error`] when a statement fails.
 pub async fn clear_all(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
     for statement in [
+        "DELETE FROM item_documents",
         "DELETE FROM acquisition_offers",
         "DELETE FROM wishlist_entries",
         "DELETE FROM acquisition_vendors",

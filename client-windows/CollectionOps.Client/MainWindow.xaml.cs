@@ -41,8 +41,8 @@ public sealed partial class MainWindow : Window
         ContentFrame.Navigate((item.Tag as string) switch
         {
             "dashboard" => typeof(DashboardPage),
-            "inventory" or "acquisitions" or "organization" or "sharing" => typeof(CollectionPage),
-            "documents" or "finance" => typeof(FutureModulePage),
+            "inventory" or "documents" or "acquisitions" or "organization" or "sharing" => typeof(CollectionPage),
+            "finance" => typeof(FutureModulePage),
             "account" => typeof(AccountPage),
             _ => typeof(DashboardPage),
         }, item.Tag);

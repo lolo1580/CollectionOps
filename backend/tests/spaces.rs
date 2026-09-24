@@ -129,8 +129,10 @@ async fn creating_a_space_establishes_the_owner_membership_counter_and_grant() {
             Permission::CollectionsWrite,
             Permission::AcquisitionsRead,
             Permission::AcquisitionsWrite,
+            Permission::DocumentsRead,
+            Permission::DocumentsWrite,
         ]),
-        "ownership grants collection and acquisitions access, not financial access"
+        "new spaces explicitly grant collection, acquisitions and documents, not finance"
     );
 }
 

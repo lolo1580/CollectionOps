@@ -57,6 +57,10 @@ async fn openapi_document_exposes_health_contract() {
     assert!(payload["paths"]["/api/v1/health/ready"].is_object());
     assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["post"].is_object());
     assert!(payload["paths"]["/api/v1/items/{item_id}/transfers"]["get"].is_object());
+    assert!(
+        payload["paths"]["/api/v1/spaces/{space_id}/items/{item_id}/documents"]["post"].is_object()
+    );
+    assert!(payload["paths"]["/api/v1/spaces/{space_id}/items/{item_id}/documents/{document_id}"]["get"].is_object());
     let create_parameters =
         payload["paths"]["/api/v1/spaces/{space_id}/items"]["post"]["parameters"]
             .as_array()
