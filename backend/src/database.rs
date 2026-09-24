@@ -217,6 +217,16 @@ impl Space {
     }
 }
 
+/// The audited result of handing a space to another member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceOwnershipTransfer {
+    pub space_id: Uuid,
+    pub previous_owner_account_id: Uuid,
+    pub new_owner_account_id: Uuid,
+    pub actor_account_id: Uuid,
+    pub transferred_at: DateTime<Utc>,
+}
+
 /// A membership of one account in one space, with the account's effective grants.
 ///
 /// Identifiers are UUIDs and grants are a set, so this value can be handed straight to
@@ -271,6 +281,10 @@ pub enum SpaceError {
     NotAuthorized,
     /// The owner must retain collection read and write grants.
     OwnerCoreGrantsRequired,
+    /// The requested new owner is already the owner of the space.
+    OwnershipUnchanged,
+    /// The requested new owner is not a member of the space.
+    TargetNotMember,
 }
 
 impl Database {
@@ -1282,7 +1296,7 @@ impl Database {
              SELECT id, space_id, inventory_number, name, description, historical_reference, technical_reference, state, revision, created_by_account_id, created_at \
              FROM inventory_items \
              WHERE space_id = ? AND inventory_number > ? \
-               AND (? = '' OR LOCATE(?, name) > 0) \
+               AND (? = '' OR LOCATE(?, CONCAT_WS(' ', name, description, historical_reference, technical_reference)) > 0) \
                AND (? = 'all' OR state = ?) \
                AND (? IS NULL OR EXISTS ( \
                    SELECT 1 FROM item_category_assignments a \
@@ -1588,6 +1602,72 @@ impl Database {
         Ok(removed)
     }
 
+    /// Hands the space to another existing member and records the transfer.
+    ///
+    /// Only the current owner may transfer ownership, and the new owner must already be a
+    /// member: ownership never grants collection or financial rights by itself, so the
+    /// membership and its grants are left untouched. The operation is atomic and audited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError::Space`] when the space is missing, the actor is not the owner,
+    /// the target is not a member, or the target is already the owner.
+    pub async fn transfer_space_ownership(
+        &self,
+        space_id: Uuid,
+        new_owner_account_id: Uuid,
+        actor_account_id: Uuid,
+    ) -> Result<SpaceOwnershipTransfer, DatabaseError> {
+        let mut transaction = self.pool.begin().await.map_err(DatabaseError::Query)?;
+        let space = fetch_space_for_update(&mut transaction, space_id).await?;
+        if space.owner_account_id != actor_account_id {
+            return Err(DatabaseError::Space(SpaceError::NotAuthorized));
+        }
+        if space.owner_account_id == new_owner_account_id {
+            return Err(DatabaseError::Space(SpaceError::OwnershipUnchanged));
+        }
+        let member: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT account_id FROM space_memberships WHERE space_id = ? AND account_id = ? FOR UPDATE",
+        )
+        .bind(space_id.to_string())
+        .bind(new_owner_account_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        if member.is_none() {
+            return Err(DatabaseError::Space(SpaceError::TargetNotMember));
+        }
+        let transferred_at = Utc::now();
+        sqlx::query("UPDATE spaces SET owner_account_id = ? WHERE id = ?")
+            .bind(new_owner_account_id.to_string())
+            .bind(space_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(DatabaseError::Query)?;
+        sqlx::query(
+            "INSERT INTO space_ownership_events \
+                 (id, space_id, previous_owner_account_id, new_owner_account_id, actor_account_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(space_id.to_string())
+        .bind(space.owner_account_id.to_string())
+        .bind(new_owner_account_id.to_string())
+        .bind(actor_account_id.to_string())
+        .bind(transferred_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(DatabaseError::Query)?;
+        transaction.commit().await.map_err(DatabaseError::Query)?;
+        Ok(SpaceOwnershipTransfer {
+            space_id,
+            previous_owner_account_id: space.owner_account_id,
+            new_owner_account_id,
+            actor_account_id,
+            transferred_at,
+        })
+    }
+
     /// Lists the members of a space with their grants, for the sharing screen.
     ///
     /// # Errors
@@ -1811,6 +1891,27 @@ where
         .await
         .map_err(DatabaseError::Query)?
         .ok_or(DatabaseError::Space(SpaceError::SpaceNotFound))?;
+
+    Ok(Space {
+        id: parse_uuid(&decode_text(&row, "id")?)?,
+        name: row.try_get("name").map_err(DatabaseError::Query)?,
+        owner_account_id: parse_uuid(&decode_text(&row, "owner_account_id")?)?,
+        created_at: row.try_get("created_at").map_err(DatabaseError::Query)?,
+    })
+}
+
+async fn fetch_space_for_update(
+    transaction: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    space_id: Uuid,
+) -> Result<Space, DatabaseError> {
+    let row = sqlx::query(
+        "SELECT id, name, owner_account_id, created_at FROM spaces WHERE id = ? FOR UPDATE",
+    )
+    .bind(space_id.to_string())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DatabaseError::Query)?
+    .ok_or(DatabaseError::Space(SpaceError::SpaceNotFound))?;
 
     Ok(Space {
         id: parse_uuid(&decode_text(&row, "id")?)?,

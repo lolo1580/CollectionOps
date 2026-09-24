@@ -391,6 +391,37 @@ public sealed partial class CollectionPage : Page
         });
     }
 
+    private async void OnTransferOwnership(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Members.SelectedItem is not SpaceMember member) return;
+        if (space.OwnerAccountId != Api.CurrentAccountId)
+        {
+            ShowStatus("Seul le propriétaire actuel peut transférer la propriété.", InfoBarSeverity.Warning);
+            return;
+        }
+        if (member.AccountId == Api.CurrentAccountId)
+        {
+            ShowStatus("Choisissez un autre membre comme nouveau propriétaire.", InfoBarSeverity.Warning);
+            return;
+        }
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = $"Transférer la propriété à {member.Label} ?",
+            Content = "Le nouveau propriétaire pourra inviter et gérer les membres. Vous resterez membre avec vos droits actuels et ne pourrez plus transférer la propriété.",
+            PrimaryButtonText = "Transférer",
+            CloseButtonText = "Annuler",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        await RunAsync(async () =>
+        {
+            await Api.TransferSpaceOwnershipAsync(space.Id, member.AccountId);
+            await LoadSpacesAsync(space.Id);
+            ShowStatus("Propriété de l'espace transférée.", InfoBarSeverity.Success);
+        });
+    }
+
     private async Task RefreshMembersCoreAsync(Guid? selectedId = null)
     {
         var space = ActiveSpace;
@@ -1149,6 +1180,7 @@ public sealed partial class CollectionPage : Page
         SaveMemberRightsButton.IsEnabled = false;
         RemoveMemberButton.IsEnabled = false;
         RefreshMembersButton.IsEnabled = false;
+        TransferOwnershipButton.IsEnabled = false;
         CreateCategoryButton.IsEnabled = false;
         CreateFieldButton.IsEnabled = false;
         SaveItemCategoriesButton.IsEnabled = false;
@@ -1201,6 +1233,9 @@ public sealed partial class CollectionPage : Page
         SaveMemberRightsButton.IsEnabled = canChangeMember;
         RemoveMemberButton.IsEnabled = canChangeMember &&
             (Members.SelectedItem as SpaceMember)?.AccountId != ActiveSpace?.OwnerAccountId;
+        TransferOwnershipButton.IsEnabled = MembersPanel.Visibility == Visibility.Visible &&
+            ActiveSpace?.OwnerAccountId == Api.CurrentAccountId &&
+            Members.SelectedItem is SpaceMember newOwner && newOwner.AccountId != Api.CurrentAccountId;
         CreateCategoryButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
         CreateFieldButton.IsEnabled = CreateCategoryButton.IsEnabled && FieldCategory.SelectedItem is CategoryOption { Id: not null };
         SaveItemCategoriesButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;

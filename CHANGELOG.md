@@ -13,6 +13,10 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Recherche d'inventaire étendue au nom, à la description et aux références historique et technique, les jokers restant littéraux ; test HTTP d'une correspondance dans la description et dans une référence.
+- Transfert de propriété d'un espace par `POST /api/v1/spaces/{space_id}/ownership`, réservé au propriétaire actuel et à un membre existant ; l'ancien propriétaire reste membre et le nouveau ne reçoit aucun droit implicite.
+- Table `space_ownership_events` et tests HTTP de l'autorisation, du refus d'un non-membre, du transfert vers soi-même et de l'audit.
+- Client Windows : transfert de la propriété depuis l'écran Collection, avec confirmation, et vérification de contrat portant le total à 32.
 - Client Windows : renommage d'une catégorie et d'un champ depuis l'écran Collection, et gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant).
 - Vérifications du client Windows pour le renommage des définitions et le contrat des relations, portant le total à 31.
 - Relations typées et dirigées entre objets d'un même espace (`related`, `variant_of`, `part_of`) : routes `GET` et `PUT /api/v1/items/{item_id}/relations`, remplacement d'ensemble limité à 50, contrôle de révision, refus d'un lien vers soi-même ou vers un autre espace, et suppression de tous les liens qui mentionnent un objet transféré.
@@ -109,6 +113,7 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Sécurité
 
+- Seul le propriétaire actuel peut transférer la propriété d'un espace, et uniquement au profit d'un membre existant ; le nouveau propriétaire ne reçoit aucun droit implicite et l'opération est auditée.
 - Aucune permission globale ne peut être enregistrée comme droit d'espace ; les tentatives sont refusées avant écriture.
 - Un membre ne peut pas élargir ses propres droits, et le propriétaire ne peut pas être retiré de son espace.
 - Les droits d'espace sont relus depuis la base à chaque opération, de sorte qu'un droit retiré cesse d'agir immédiatement.

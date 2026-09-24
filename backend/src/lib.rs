@@ -23,7 +23,7 @@ pub use database::{
     AuthenticatedSession, Database, DatabaseError, InventoryError, IssuedSession, Item,
     ItemSearchFilters, ItemState, ItemStateEvent, ItemTransfer, MAX_ITEM_NAME_CHARS,
     MAX_SPACE_NAME_CHARS, MemberWithAccount, Membership, SessionError, SessionRecord, Space,
-    SpaceError, TransferOutcome,
+    SpaceError, SpaceOwnershipTransfer, TransferOutcome,
 };
 pub use groups::{GroupError, InventoryGroup};
 pub use http::{

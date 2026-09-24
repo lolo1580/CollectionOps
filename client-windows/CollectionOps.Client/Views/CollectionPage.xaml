@@ -129,7 +129,9 @@
                     <Button x:Name="SaveMemberRightsButton" Content="Enregistrer les droits" Click="OnSaveMemberRights" />
                     <Button x:Name="RemoveMemberButton" Content="Retirer ce membre" Click="OnRemoveMember" />
                     <Button x:Name="RefreshMembersButton" Content="Actualiser" Click="OnRefreshMembers" />
+                    <Button x:Name="TransferOwnershipButton" Content="Transférer la propriété" Click="OnTransferOwnership" />
                 </StackPanel>
+                <TextBlock Text="Seul le propriétaire actuel peut transmettre la propriété, et uniquement à un membre existant. Le nouveau propriétaire ne reçoit aucun droit de collection ou financier supplémentaire." TextWrapping="Wrap" Opacity="0.7" />
             </StackPanel>
 
             <StackPanel x:Name="AcquisitionsPanel" Spacing="8" Visibility="Collapsed">

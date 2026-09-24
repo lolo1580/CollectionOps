@@ -91,6 +91,24 @@ async fn inventory_pages_are_bounded_and_search_treats_wildcards_literally() {
     assert_eq!(literal["items"].as_array().unwrap().len(), 1);
     assert_eq!(literal["items"][0]["name"], "100% Casque");
 
+    let listed = database.items_in_space(space.id).await.unwrap();
+    database
+        .update_item_details(
+            listed[0].id,
+            Some("Boîte en carton"),
+            None,
+            Some("REF-42"),
+            1,
+        )
+        .await
+        .unwrap();
+    let by_description = payload(get(format!("{path}?q=carton")).await.unwrap()).await;
+    assert_eq!(by_description["items"].as_array().unwrap().len(), 1);
+    assert_eq!(by_description["items"][0]["name"], "Alpha");
+    let by_reference = payload(get(format!("{path}?q=REF-42")).await.unwrap()).await;
+    assert_eq!(by_reference["items"].as_array().unwrap().len(), 1);
+    assert_eq!(by_reference["items"][0]["name"], "Alpha");
+
     let root = database
         .create_category(space.id, None, "Militaire")
         .await

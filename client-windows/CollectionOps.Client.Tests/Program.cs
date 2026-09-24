@@ -33,7 +33,8 @@ await ReadAcquisitionPermissionsAndWishes();
 await CreateVendorAndOfferWithoutAmounts();
 await RenameCategoryAndFieldDefinitions();
 await ReadAndReplaceItemRelations();
-Console.WriteLine("SessionApi: 31 checks passed.");
+await TransferSpaceOwnership();
+Console.WriteLine("SessionApi: 32 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -571,6 +572,26 @@ static async Task ReadAndReplaceItemRelations()
         handler.LastBody.Contains("\"kind\":\"variant_of\"") &&
         handler.LastBody.Contains("\"expected_revision\":\"2\"") && handler.LastToken == "secret",
         "Replacing relations must send the typed target and the displayed revision.");
+}
+
+static async Task TransferSpaceOwnership()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var previous = Guid.NewGuid();
+    var newOwner = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK, $"{{\"space_id\":\"{spaceId}\",\"previous_owner_account_id\":\"{previous}\",\"new_owner_account_id\":\"{newOwner}\",\"actor_account_id\":\"{previous}\",\"transferred_at\":\"2026-09-24T10:00:00Z\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var result = await api.TransferSpaceOwnershipAsync(spaceId, newOwner);
+    Assert(result.NewOwnerAccountId == newOwner && result.PreviousOwnerAccountId == previous,
+        "Ownership transfer response must parse.");
+    Assert(handler.LastPath == $"/api/v1/spaces/{spaceId}/ownership" && handler.LastMethod == HttpMethod.Post &&
+        handler.LastBody?.Contains($"\"new_owner_account_id\":\"{newOwner}\"") == true &&
+        handler.LastToken == "secret",
+        "Ownership transfer must target the space and send the chosen member.");
 }
 
 static void Assert(bool condition, string message)

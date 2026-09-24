@@ -24,7 +24,7 @@ use crate::{
     database::{
         Database, DatabaseError, InventoryError, IssuedSession, Item, ItemSearchFilters, ItemState,
         ItemStateEvent, ItemTransfer, MemberWithAccount, SessionError, SessionRecord, Space,
-        SpaceError, TransferOutcome,
+        SpaceError, SpaceOwnershipTransfer, TransferOutcome,
     },
     groups::{GroupError, InventoryGroup},
     invitations::{Invitation, InvitationError},
@@ -1259,6 +1259,32 @@ pub struct UpdateMemberPermissionsRequest {
     pub permissions: Vec<Permission>,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TransferSpaceOwnershipRequest {
+    pub new_owner_account_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SpaceOwnershipResponse {
+    pub space_id: Uuid,
+    pub previous_owner_account_id: Uuid,
+    pub new_owner_account_id: Uuid,
+    pub actor_account_id: Uuid,
+    pub transferred_at: String,
+}
+
+impl From<SpaceOwnershipTransfer> for SpaceOwnershipResponse {
+    fn from(value: SpaceOwnershipTransfer) -> Self {
+        Self {
+            space_id: value.space_id,
+            previous_owner_account_id: value.previous_owner_account_id,
+            new_owner_account_id: value.new_owner_account_id,
+            actor_account_id: value.actor_account_id,
+            transferred_at: value.transferred_at.to_rfc3339(),
+        }
+    }
+}
+
 fn can_manage_members(principal: &Principal, owner_account_id: Uuid) -> bool {
     principal.subject == owner_account_id || principal.roles.contains("system_admin")
 }
@@ -1280,6 +1306,25 @@ fn member_error(error: &DatabaseError, instance: &str) -> ApiError {
             instance,
             "Un droit demandé n'appartient pas à un espace.",
             "invalid_grants",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
+fn ownership_error(error: &DatabaseError, instance: &str) -> ApiError {
+    match error.space_error() {
+        Some(SpaceError::SpaceNotFound | SpaceError::NotAuthorized) => {
+            ApiError::resource_not_found(instance)
+        }
+        Some(SpaceError::OwnershipUnchanged) => ApiError::invalid_request(
+            instance,
+            "Ce membre est déjà propriétaire de l'espace.",
+            "ownership_unchanged",
+        ),
+        Some(SpaceError::TargetNotMember) => ApiError::invalid_request(
+            instance,
+            "Le nouveau propriétaire doit déjà être membre de l'espace.",
+            "target_not_member",
         ),
         _ => ApiError::internal(instance),
     }
@@ -1378,6 +1423,39 @@ async fn remove_member(
         .await
         .map_err(|e| member_error(&e, uri.path()))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/api/v1/spaces/{space_id}/ownership", tag = "sharing",
+    request_body = TransferSpaceOwnershipRequest,
+    params(("space_id" = Uuid, Path, description = "Espace")),
+    responses((status = 200, body = SpaceOwnershipResponse), (status = 401, body = ProblemDetails),
+        (status = 404, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn transfer_space_ownership(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(space_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<TransferSpaceOwnershipRequest>,
+) -> Result<Json<SpaceOwnershipResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let space = db
+        .space(space_id)
+        .await
+        .map_err(|_| ApiError::resource_not_found(uri.path()))?;
+    // Only the current owner may transfer, and an unrelated account must not learn the space
+    // exists: both cases answer 404.
+    if space.owner_account_id != principal.subject {
+        return Err(ApiError::resource_not_found(uri.path()));
+    }
+    let transfer = db
+        .transfer_space_ownership(space_id, payload.new_owner_account_id, principal.subject)
+        .await
+        .map_err(|error| ownership_error(&error, uri.path()))?;
+    Ok(Json(transfer.into()))
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -3730,7 +3808,8 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         accept_invitation,
         list_members,
         update_member_permissions,
-        remove_member
+        remove_member,
+        transfer_space_ownership
     ),
     components(schemas(
         HealthResponse,
@@ -3757,6 +3836,7 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         EffectiveFieldResponse, EffectiveFieldListResponse, SetItemFieldValueRequest,
         CreateInvitationRequest, InvitationResponse, InvitationListResponse, AcceptInvitationRequest,
         SpaceMemberResponse, SpaceMemberListResponse, UpdateMemberPermissionsRequest,
+        TransferSpaceOwnershipRequest, SpaceOwnershipResponse,
         ItemResponse, ItemListResponse, CreateItemRequest, RenameItemRequest, UpdateItemDetailsRequest, ItemStateRequest,
         TransferItemRequest, ItemTransferResponse, TransferOutcomeResponse, ItemTransferListResponse,
         ItemStateEventResponse, ItemStateEventListResponse,
@@ -3979,6 +4059,10 @@ fn app_with_state(state: AppState) -> Router {
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/members/{{account_id}}"),
                 delete(remove_member),
+            )
+            .route(
+                &format!("{API_PREFIX}/spaces/{{space_id}}/ownership"),
+                post(transfer_space_ownership),
             )
             .route(
                 &format!("{API_PREFIX}/spaces/{{space_id}}/invitations/{{invitation_id}}"),

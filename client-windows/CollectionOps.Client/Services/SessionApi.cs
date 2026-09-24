@@ -272,6 +272,10 @@ public sealed class SessionApi : IDisposable
     public Task<SpaceMember> UpdateMemberPermissionsAsync(Guid spaceId, Guid accountId, IReadOnlyList<string> permissions) =>
         SendJsonAsync<SpaceMember>(HttpMethod.Put, $"api/v1/spaces/{spaceId}/members/{accountId}/permissions", new { permissions });
 
+    public Task<SpaceOwnershipTransfer> TransferSpaceOwnershipAsync(Guid spaceId, Guid newOwnerAccountId) =>
+        SendJsonAsync<SpaceOwnershipTransfer>(HttpMethod.Post, $"api/v1/spaces/{spaceId}/ownership",
+            new { new_owner_account_id = newOwnerAccountId });
+
     public async Task RemoveMemberAsync(Guid spaceId, Guid accountId)
     {
         using var request = AuthenticatedRequest(HttpMethod.Delete, $"api/v1/spaces/{spaceId}/members/{accountId}");
@@ -595,6 +599,12 @@ public sealed record SpaceMember(
     public string Label => Email is null ? DisplayName : $"{DisplayName} ({Email})";
 }
 public sealed record SpaceMemberListResponse([property: JsonPropertyName("members")] List<SpaceMember> Members);
+public sealed record SpaceOwnershipTransfer(
+    [property: JsonPropertyName("space_id")] Guid SpaceId,
+    [property: JsonPropertyName("previous_owner_account_id")] Guid PreviousOwnerAccountId,
+    [property: JsonPropertyName("new_owner_account_id")] Guid NewOwnerAccountId,
+    [property: JsonPropertyName("actor_account_id")] Guid ActorAccountId,
+    [property: JsonPropertyName("transferred_at")] DateTimeOffset TransferredAt);
 public sealed record CollectionCategory(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("space_id")] Guid SpaceId,
