@@ -18,6 +18,7 @@ pub async fn clear_all(pool: &sqlx::MySqlPool) -> Result<(), sqlx::Error> {
         "DELETE FROM wishlist_entries",
         "DELETE FROM acquisition_vendors",
         "DELETE FROM inventory_group_members",
+        "DELETE FROM item_relations",
         "DELETE FROM item_custom_field_values",
         "DELETE FROM item_category_assignments",
         "DELETE FROM item_location_events",

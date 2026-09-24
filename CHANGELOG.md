@@ -6,12 +6,17 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
+- La recherche paginée d'inventaire liait le `group_id` à la place du `space_id` dans l'ordre des paramètres SQL, ce qui renvoyait une liste vide pour tout appel à `GET /spaces/{space_id}/items` ; l'ordre des `bind` suit maintenant les `?` de la requête.
 - La connexion renvoie l'identifiant et le nom du compte authentifié dans `principal`, au lieu d'un identifiant aléatoire et d'un nom vide.
 - Le client Windows efface son état de connexion après un refus `401` sur les sessions et affiche une erreur contrôlée pour une réponse JSON invalide ou un état de santé inattendu.
 - Quatre vérifications automatisées du client de session couvrent l'adresse serveur, l'état de santé, l'expiration de session et une réponse JSON invalide ; elles s'exécutent aussi dans la CI Windows.
 
 ### Ajouté
 
+- Relations typées et dirigées entre objets d'un même espace (`related`, `variant_of`, `part_of`) : routes `GET` et `PUT /api/v1/items/{item_id}/relations`, remplacement d'ensemble limité à 50, contrôle de révision, refus d'un lien vers soi-même ou vers un autre espace, et suppression de tous les liens qui mentionnent un objet transféré.
+- Migration `item_relations` et tests HTTP/MariaDB de l'isolation entre espaces, des révisions, de la lecture entrante/sortante, de la corbeille et du nettoyage au transfert.
+- Renommage des catégories et des champs personnalisés par `PATCH`, sans changer le parent, le type de valeur ni les identifiants stables ; un nom déjà pris reçoit `409`, une définition d'un autre espace `404`, et les valeurs enregistrées restent attachées au même champ.
+- En-tête `Location` sur la création d'objet, pointant vers `/api/v1/items/{item_id}`.
 - Client Windows : option temporaire pour joindre directement une adresse IPv4 privée en HTTP pendant le développement, désactivée par défaut et limitée aux plages privées ; changement de serveur ou de mode invalidant la session locale.
 - Envies, vendeurs et offres repérées par espace, sans montants, avec droits d'acquisition explicites, API et écran Windows ; migration des droits des propriétaires existants et tests d'isolation.
 - Renommage des séries et regroupements avec contrôle de révision ; suppression des seuls ensembles vides, confirmée dans le client Windows.

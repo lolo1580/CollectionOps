@@ -1,6 +1,6 @@
 # Contrat API v1 — objets du premier lot
 
-- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration, catégories, champs personnalisés et transferts d'objets sont exposées ; la synchronisation reste à définir.
+- Statut : contrat partiellement implémenté. Les routes espaces, inventaire, recherche paginée, renommage, archivage, corbeille, restauration, catégories, champs personnalisés, renommage des définitions, relations entre objets et transferts sont exposées ; la synchronisation reste à définir.
 - Base : `/api/v1`, JSON sur HTTPS, identifiants UUID en forme canonique.
 - Références : [cahier des charges](../product/cahier-des-charges-v1.md), [autorisation par espace](../architecture/ADR-0004-space-authorization.md), [migration du noyau](../../backend/migrations/202609220001_core.sql).
 
@@ -65,6 +65,14 @@ Le backend retire les espaces aux extrémités du nom et refuse un nom vide ou d
 `GET /api/v1/items/{item_id}/categories` retourne `revision` et les catégories actuelles. `POST` sur la même route ajoute `{"category_ids":["<id>"],"expected_revision":"1"}` sans retirer les catégories existantes. `PUT` sur cette route remplace la sélection complète ; `category_ids:[]` retire toutes les catégories. Dans les deux cas, 20 catégories au maximum sont autorisées et chaque identifiant doit appartenir à l'espace courant. Le remplacement est atomique, n'incrémente la révision que si la sélection change et termine les anciennes affectations sans les supprimer. Les valeurs des champs encore accessibles via la nouvelle sélection sont recopiées si nécessaire ; les autres restent historiques mais disparaissent de la fiche courante. `GET /api/v1/items/{item_id}/fields` retourne les champs effectifs (hérités compris), dédupliqués par identifiant de champ. `PUT /api/v1/items/{item_id}/fields/{field_id}` accepte `{"value":"1944-06-06","expected_revision":"2"}`. Les valeurs sont validées selon leur type ; les dates suivent `AAAA-MM-JJ`. La lecture exige `collections_read`, l'écriture `collections_write` ; une révision obsolète reçoit `409`, un objet en corbeille refuse l'écriture.
 
 La modification ou la suppression des définitions de catégories et de champs ne sont pas encore exposées.
+
+`PATCH /api/v1/spaces/{space_id}/categories/{category_id}` renomme une catégorie avec `{"name":"Nouveau nom"}` et `PATCH /api/v1/spaces/{space_id}/categories/{category_id}/fields/{field_id}` renomme un champ. Le parent d'une catégorie, le type de valeur d'un champ et les identifiants stables ne changent pas, et les valeurs déjà enregistrées restent attachées au même champ. Un nom vide ou trop long reçoit `422` ; un nom déjà pris par une catégorie sœur ou un autre champ de la même catégorie reçoit `409`. L'écriture exige `collections_write` ; une catégorie ou un champ d'un autre espace reçoit `404`. La suppression d'une définition n'est toujours pas exposée, car l'historique des valeurs et des classements la référence encore.
+
+## Relations entre objets
+
+`GET /api/v1/items/{item_id}/relations` retourne `{"revision":"N","relations":[...]}` avec les liens sortants et entrants de l'objet dans son espace courant. Chaque entrée expose `id`, `kind` (`related`, `variant_of` ou `part_of`), `direction` (`outgoing` ou `incoming`), `related_item_id`, `related_item_name` et `created_at`.
+
+`PUT` sur la même route remplace les liens **sortants** de l'objet par `{"relations":[{"target_id":"<id>","kind":"variant_of"}],"expected_revision":"1"}`. Un objet ne peut pas se lier à lui-même, la même paire (cible, type) ne peut pas être répétée et la limite est de 50 entrées. Chaque cible doit appartenir au même espace ; une cible inconnue ou d'un autre espace reçoit `404`. Une sélection identique ne change pas la révision ; une révision obsolète reçoit `409`, un objet en corbeille refuse l'écriture avec `422`. Un transfert vers un autre espace supprime tous les liens qui mentionnent l'objet. La lecture exige `collections_read`, l'écriture `collections_write`.
 
 ## Archiver, mettre à la corbeille, restaurer
 

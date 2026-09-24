@@ -261,9 +261,15 @@ async fn collection_path_enforces_session_and_space_membership() {
         .await
         .unwrap();
     assert_eq!(create_item.status(), StatusCode::CREATED);
+    let location = create_item
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let item = body_json(create_item).await;
     assert_eq!(item["inventory_number"], "1");
     let item_path = format!("/api/v1/items/{}", item["id"].as_str().unwrap());
+    assert_eq!(location.as_deref(), Some(item_path.as_str()));
     let outsider_item = router
         .clone()
         .oneshot(

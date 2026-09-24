@@ -7,6 +7,7 @@ mod http;
 mod invitations;
 mod locations;
 mod mail;
+mod relations;
 mod security;
 mod taxonomy;
 pub mod testing;
@@ -32,6 +33,7 @@ pub use http::{
 pub use invitations::{Invitation, InvitationError, IssuedInvitation};
 pub use locations::{ItemLocationEvent, Location, LocationError};
 pub use mail::{MailConfigError, SmtpDelivery};
+pub use relations::{ItemRelation, MAX_ITEM_RELATIONS, RelationError, RelationKind};
 pub use security::{
     AuthorizationError, Permission, Principal, SpaceAuthorizationError, SpaceMembership,
     SpaceOwnership,

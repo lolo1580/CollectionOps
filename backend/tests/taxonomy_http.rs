@@ -686,3 +686,268 @@ async fn replacing_categories_preserves_shared_values_and_ends_removed_assignmen
             .is_empty()
     );
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn categories_and_fields_can_be_renamed_without_changing_identity() {
+    let Ok(url) = std::env::var("COLLECTIONOPS_TEST_DATABASE_URL") else {
+        return;
+    };
+    let db = Database::connect_and_migrate(&url).await.unwrap();
+    collectionops_backend::testing::clear_all(db.pool())
+        .await
+        .unwrap();
+    let admin = BootstrapAdmin::from_parts("owner@example.com", "Owner", PASSWORD).unwrap();
+    db.provision_bootstrap_admin(&admin, &PasswordService::default())
+        .await
+        .unwrap();
+    let owner_raw: Vec<u8> = sqlx::query_scalar("SELECT id FROM accounts WHERE email = ?")
+        .bind("owner@example.com")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    let owner_id = Uuid::parse_str(std::str::from_utf8(&owner_raw).unwrap()).unwrap();
+    let reader_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO accounts (id, display_name, email, password_hash) SELECT ?, 'Reader', 'reader@example.com', password_hash FROM accounts WHERE email = ?")
+        .bind(reader_id.to_string()).bind("owner@example.com").execute(db.pool()).await.unwrap();
+    let space = db.create_space("Collection", owner_id).await.unwrap();
+    let other_space = db.create_space("Autre", owner_id).await.unwrap();
+    db.add_member(space.id, reader_id, &[Permission::CollectionsRead])
+        .await
+        .unwrap();
+    let router = collectionops_backend::app_with_database(db.clone());
+    let owner_token = login(&router, "owner@example.com").await;
+    let reader_token = login(&router, "reader@example.com").await;
+    let categories_path = format!("/api/v1/spaces/{}/categories", space.id);
+
+    let root = db.create_category(space.id, None, "Armes").await.unwrap();
+    let child = db
+        .create_category(space.id, Some(root.id), "Casques")
+        .await
+        .unwrap();
+    let sibling = db
+        .create_category(space.id, Some(root.id), "Uniformes")
+        .await
+        .unwrap();
+    let alien = db
+        .create_category(other_space.id, None, "Alien")
+        .await
+        .unwrap();
+
+    let category_path = format!("{categories_path}/{}", child.id);
+    // A blank name is refused and never reaches the database.
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &category_path,
+            Some(&owner_token),
+            Some(json!({"name":"   "}))
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &category_path,
+            Some(&reader_token),
+            Some(json!({"name":"Interdit"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    // A sibling already uses the requested name.
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &category_path,
+            Some(&owner_token),
+            Some(json!({"name":sibling.name}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let renamed = send(
+        &router,
+        Method::PATCH,
+        &category_path,
+        Some(&owner_token),
+        Some(json!({"name":"Casques Lourds"})),
+    )
+    .await;
+    assert_eq!(renamed.status(), StatusCode::OK);
+    let renamed = body_json(renamed).await;
+    assert_eq!(renamed["id"], child.id.to_string());
+    assert_eq!(renamed["parent_id"], root.id.to_string());
+    assert_eq!(renamed["name"], "Casques Lourds");
+    // An identical rename is accepted and keeps the identifier.
+    let no_op = body_json(
+        send(
+            &router,
+            Method::PATCH,
+            &category_path,
+            Some(&owner_token),
+            Some(json!({"name":"Casques Lourds"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_op["id"], child.id.to_string());
+    assert_eq!(no_op["name"], "Casques Lourds");
+    // A category from another space is invisible even with the right identifier.
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!("{categories_path}/{}", alien.id),
+            Some(&owner_token),
+            Some(json!({"name":"Fuite"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let fields_path = format!("{categories_path}/{}/fields", root.id);
+    let factory = body_json(
+        send(
+            &router,
+            Method::POST,
+            &fields_path,
+            Some(&owner_token),
+            Some(json!({"name":"Fabricant", "value_type":"text"})),
+        )
+        .await,
+    )
+    .await;
+    let factory_id = Uuid::parse_str(factory["id"].as_str().unwrap()).unwrap();
+    let material = body_json(
+        send(
+            &router,
+            Method::POST,
+            &fields_path,
+            Some(&owner_token),
+            Some(json!({"name":"Matiere", "value_type":"text"})),
+        )
+        .await,
+    )
+    .await;
+    let material_id = Uuid::parse_str(material["id"].as_str().unwrap()).unwrap();
+
+    let field_path = format!("{fields_path}/{material_id}");
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &field_path,
+            Some(&owner_token),
+            Some(json!({"name":factory["name"]}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &field_path,
+            Some(&reader_token),
+            Some(json!({"name":"Interdit"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let renamed_field = body_json(
+        send(
+            &router,
+            Method::PATCH,
+            &field_path,
+            Some(&owner_token),
+            Some(json!({"name":"Materiau"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(renamed_field["id"], material_id.to_string());
+    assert_eq!(renamed_field["category_id"], root.id.to_string());
+    assert_eq!(renamed_field["name"], "Materiau");
+    assert_eq!(
+        renamed_field["value_type"], "text",
+        "renaming keeps the fixed value type"
+    );
+    // A field addressed through the wrong category is not found.
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!("{categories_path}/{}/fields/{material_id}", child.id),
+            Some(&owner_token),
+            Some(json!({"name":"Deracine"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    // Renaming an unknown field is a 404, not a silent success.
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!("{fields_path}/{}", Uuid::now_v7()),
+            Some(&owner_token),
+            Some(json!({"name":"Fantome"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Stored values still point at the same field after its rename.
+    let item = db.create_item(space.id, "Casque", owner_id).await.unwrap();
+    assert_eq!(
+        send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/items/{}/categories", item.id),
+            Some(&owner_token),
+            Some(json!({"category_ids":[root.id], "expected_revision":"1"})),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PUT,
+            &format!("/api/v1/items/{}/fields/{factory_id}", item.id),
+            Some(&owner_token),
+            Some(json!({"value":"Schuberth", "expected_revision":"2"})),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let fields = db.effective_item_fields(item.id, space.id).await.unwrap();
+    assert_eq!(fields.len(), 2);
+    assert_eq!(
+        fields
+            .iter()
+            .find(|field| field.id == factory_id)
+            .and_then(|field| field.value.clone())
+            .as_deref(),
+        Some("Schuberth")
+    );
+    assert!(
+        fields.iter().any(|field| field.name == "Materiau"),
+        "the renamed definition is what the item now displays"
+    );
+}

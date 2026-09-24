@@ -30,6 +30,7 @@ use crate::{
     invitations::{Invitation, InvitationError},
     locations::{ItemLocationEvent, Location, LocationError},
     mail::SmtpDelivery,
+    relations::{ItemRelation, MAX_ITEM_RELATIONS, RelationError, RelationKind},
     security::{Permission, Principal},
     taxonomy::{Category, CategoryField, EffectiveField, FieldType, ItemCategory, TaxonomyError},
 };
@@ -852,6 +853,61 @@ pub struct CreateCategoryFieldRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RenameDefinitionRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemRelationResponse {
+    pub id: Uuid,
+    pub kind: String,
+    pub direction: String,
+    pub related_item_id: Uuid,
+    pub related_item_name: String,
+    pub created_at: String,
+}
+
+impl ItemRelationResponse {
+    fn from_relation(value: ItemRelation, item_id: Uuid) -> Self {
+        let outgoing = value.source_item_id == item_id;
+        Self {
+            id: value.id,
+            kind: value.kind.as_str().to_owned(),
+            direction: if outgoing { "outgoing" } else { "incoming" }.to_owned(),
+            related_item_id: if outgoing {
+                value.target_item_id
+            } else {
+                value.source_item_id
+            },
+            related_item_name: if outgoing {
+                value.target_name
+            } else {
+                value.source_name
+            },
+            created_at: value.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemRelationListResponse {
+    pub revision: String,
+    pub relations: Vec<ItemRelationResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ItemRelationInput {
+    pub target_id: Uuid,
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ReplaceItemRelationsRequest {
+    pub relations: Vec<ItemRelationInput>,
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct LocationResponse {
     pub id: Uuid,
     pub space_id: Uuid,
@@ -980,6 +1036,41 @@ fn group_error(error: &GroupError, instance: &str) -> ApiError {
     }
 }
 
+fn relation_error(error: &RelationError, instance: &str) -> ApiError {
+    match error {
+        RelationError::InvalidKind => ApiError::invalid_request(
+            instance,
+            "Type de relation invalide.",
+            "invalid_relation_kind",
+        ),
+        RelationError::SelfRelation => ApiError::invalid_request(
+            instance,
+            "Un objet ne peut pas etre lie a lui-meme.",
+            "self_relation",
+        ),
+        RelationError::DuplicateRelation => ApiError::invalid_request(
+            instance,
+            "Une meme relation est presente deux fois.",
+            "duplicate_relation",
+        ),
+        RelationError::TooManyRelations => ApiError::invalid_request(
+            instance,
+            "Trop de relations sur cet objet.",
+            "too_many_relations",
+        ),
+        RelationError::ItemNotFound | RelationError::InvalidTarget => {
+            ApiError::resource_not_found(instance)
+        }
+        RelationError::RevisionConflict => ApiError::revision_conflict(instance),
+        RelationError::ItemInTrash => ApiError::invalid_request(
+            instance,
+            "Restaurez l'objet avant de modifier ses relations.",
+            "invalid_state",
+        ),
+        _ => ApiError::internal(instance),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct GroupResponse {
     pub id: Uuid,
@@ -1040,6 +1131,7 @@ fn taxonomy_error(error: &TaxonomyError, instance: &str) -> ApiError {
         TaxonomyError::SpaceNotFound
         | TaxonomyError::ParentNotFound
         | TaxonomyError::CategoryNotFound
+        | TaxonomyError::FieldNotFound
         | TaxonomyError::ItemNotFound
         | TaxonomyError::InvalidCategory
         | TaxonomyError::FieldNotAvailable => ApiError::resource_not_found(instance),
@@ -1757,6 +1849,125 @@ async fn replace_item_groups(
     }))
 }
 
+#[utoipa::path(get, path = "/api/v1/items/{item_id}/relations", tag = "collection",
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemRelationListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails)))]
+async fn list_item_relations(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ItemRelationListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = db
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        db,
+        &principal,
+        item.space_id,
+        Permission::CollectionsRead,
+        uri.path(),
+    )
+    .await?;
+    let relations = db
+        .item_relations(item_id)
+        .await
+        .map_err(|error| relation_error(&error, uri.path()))?;
+    Ok(Json(ItemRelationListResponse {
+        revision: item.revision.to_string(),
+        relations: relations
+            .into_iter()
+            .map(|relation| ItemRelationResponse::from_relation(relation, item_id))
+            .collect(),
+    }))
+}
+
+#[utoipa::path(put, path = "/api/v1/items/{item_id}/relations", tag = "collection",
+    request_body = ReplaceItemRelationsRequest,
+    params(("item_id" = Uuid, Path, description = "Objet")),
+    responses((status = 200, body = ItemRelationListResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn replace_item_relations(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ReplaceItemRelationsRequest>,
+) -> Result<Json<ItemRelationListResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    let item = db
+        .item(item_id)
+        .await
+        .map_err(|error| match error.inventory_error() {
+            Some(InventoryError::ItemNotFound) => ApiError::resource_not_found(uri.path()),
+            _ => ApiError::internal(uri.path()),
+        })?;
+    authorized_space(
+        db,
+        &principal,
+        item.space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let expected_revision = payload
+        .expected_revision
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ApiError::invalid_request(uri.path(), "Revision invalide.", "invalid_revision")
+        })?;
+    if payload.relations.len() > MAX_ITEM_RELATIONS {
+        return Err(ApiError::invalid_request(
+            uri.path(),
+            "Choisissez au plus 50 relations.",
+            "invalid_relations",
+        ));
+    }
+    let mut entries = Vec::with_capacity(payload.relations.len());
+    for input in &payload.relations {
+        let kind = RelationKind::from_code(&input.kind).ok_or_else(|| {
+            ApiError::invalid_request(
+                uri.path(),
+                "Type de relation invalide.",
+                "invalid_relation_kind",
+            )
+        })?;
+        entries.push((input.target_id, kind));
+    }
+    let revision = db
+        .replace_item_relations(item_id, expected_revision, &entries, principal.subject)
+        .await
+        .map_err(|error| relation_error(&error, uri.path()))?;
+    let relations = db
+        .item_relations(item_id)
+        .await
+        .map_err(|error| relation_error(&error, uri.path()))?;
+    Ok(Json(ItemRelationListResponse {
+        revision: revision.to_string(),
+        relations: relations
+            .into_iter()
+            .map(|relation| ItemRelationResponse::from_relation(relation, item_id))
+            .collect(),
+    }))
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ItemResponse {
     pub id: Uuid,
@@ -2341,6 +2552,70 @@ async fn create_category_field(
     Ok((StatusCode::CREATED, Json(field.into())))
 }
 
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/categories/{category_id}", tag = "collection", request_body = RenameDefinitionRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"), ("category_id" = Uuid, Path, description = "Categorie")),
+    responses((status = 200, body = CategoryResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn rename_category(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, category_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<RenameDefinitionRequest>,
+) -> Result<Json<CategoryResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let category = db
+        .rename_category(space_id, category_id, &payload.name)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    Ok(Json(category.into()))
+}
+
+#[utoipa::path(patch, path = "/api/v1/spaces/{space_id}/categories/{category_id}/fields/{field_id}", tag = "collection", request_body = RenameDefinitionRequest,
+    params(("space_id" = Uuid, Path, description = "Espace"), ("category_id" = Uuid, Path, description = "Categorie"), ("field_id" = Uuid, Path, description = "Champ")),
+    responses((status = 200, body = CategoryFieldResponse), (status = 401, body = ProblemDetails),
+        (status = 403, body = ProblemDetails), (status = 404, body = ProblemDetails),
+        (status = 409, body = ProblemDetails), (status = 422, body = ProblemDetails)))]
+async fn rename_category_field(
+    State(state): State<AppState>,
+    uri: Uri,
+    Path((space_id, category_id, field_id)): Path<(Uuid, Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(payload): Json<RenameDefinitionRequest>,
+) -> Result<Json<CategoryFieldResponse>, ApiError> {
+    let db = state
+        .database
+        .as_deref()
+        .ok_or_else(|| ApiError::service_unavailable(uri.path()))?;
+    let principal = authenticated_headers(db, &headers, uri.path()).await?;
+    authorized_space(
+        db,
+        &principal,
+        space_id,
+        Permission::CollectionsWrite,
+        uri.path(),
+    )
+    .await?;
+    let field = db
+        .rename_category_field(space_id, category_id, field_id, &payload.name)
+        .await
+        .map_err(|error| taxonomy_error(&error, uri.path()))?;
+    Ok(Json(field.into()))
+}
+
 #[utoipa::path(get, path = "/api/v1/spaces/{space_id}/locations", tag = "collection",
     params(("space_id" = Uuid, Path, description = "Espace")),
     responses((status = 200, body = LocationListResponse), (status = 401, body = ProblemDetails),
@@ -2874,7 +3149,7 @@ async fn create_item(
     Path(space_id): Path<Uuid>,
     headers: HeaderMap,
     Json(payload): Json<CreateItemRequest>,
-) -> Result<(StatusCode, Json<ItemResponse>), ApiError> {
+) -> Result<Response, ApiError> {
     let database = state
         .database
         .as_deref()
@@ -2897,7 +3172,15 @@ async fn create_item(
             }
             _ => ApiError::internal(uri.path()),
         })?;
-    Ok((StatusCode::CREATED, Json(item.into())))
+    let item: ItemResponse = item.into();
+    let location = format!("{API_PREFIX}/items/{}", item.id);
+    let mut response = Json(item).into_response();
+    *response.status_mut() = StatusCode::CREATED;
+    response.headers_mut().insert(
+        header::LOCATION,
+        HeaderValue::from_str(&location).map_err(|_| ApiError::internal(uri.path()))?,
+    );
+    Ok(response)
 }
 
 #[utoipa::path(get, path = "/api/v1/items/{item_id}", tag = "collection",
@@ -3408,8 +3691,10 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         create_space,
         list_categories,
         create_category,
+        rename_category,
         list_category_fields,
         create_category_field,
+        rename_category_field,
         list_locations,
         create_location,
         list_groups,
@@ -3418,6 +3703,8 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         delete_group,
         list_item_groups,
         replace_item_groups,
+        list_item_relations,
+        replace_item_relations,
         get_item_location,
         move_item_location,
         list_item_location_events,
@@ -3459,10 +3746,11 @@ fn health_payload(status: &'static str) -> Json<HealthResponse> {
         VendorResponse, VendorListResponse, CreateVendorRequest,
         OfferResponse, OfferListResponse, CreateOfferRequest,
         CategoryResponse, CategoryListResponse, CreateCategoryRequest,
-        CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest,
+        CategoryFieldResponse, CategoryFieldListResponse, CreateCategoryFieldRequest, RenameDefinitionRequest,
         LocationResponse, LocationListResponse, CreateLocationRequest,
         GroupResponse, GroupListResponse, CreateGroupRequest, RenameGroupRequest, DeleteGroupRequest,
         ItemGroupListResponse, ReplaceItemGroupsRequest,
+        ItemRelationResponse, ItemRelationListResponse, ItemRelationInput, ReplaceItemRelationsRequest,
         ItemLocationResponse, MoveItemLocationRequest,
         ItemLocationEventResponse, ItemLocationEventListResponse,
         ItemCategoryResponse, ItemCategoryListResponse, AddItemCategoriesRequest,
@@ -3556,8 +3844,18 @@ fn taxonomy_routes() -> Router<AppState> {
             get(list_categories).post(create_category),
         )
         .route(
+            &format!("{API_PREFIX}/spaces/{{space_id}}/categories/{{category_id}}"),
+            axum::routing::patch(rename_category),
+        )
+        .route(
             &format!("{API_PREFIX}/spaces/{{space_id}}/categories/{{category_id}}/fields"),
             get(list_category_fields).post(create_category_field),
+        )
+        .route(
+            &format!(
+                "{API_PREFIX}/spaces/{{space_id}}/categories/{{category_id}}/fields/{{field_id}}"
+            ),
+            axum::routing::patch(rename_category_field),
         )
         .route(
             &format!("{API_PREFIX}/items/{{item_id}}/categories"),
@@ -3611,6 +3909,13 @@ fn group_routes() -> Router<AppState> {
         )
 }
 
+fn relation_routes() -> Router<AppState> {
+    Router::new().route(
+        &format!("{API_PREFIX}/items/{{item_id}}/relations"),
+        get(list_item_relations).put(replace_item_relations),
+    )
+}
+
 fn acquisition_routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -3631,6 +3936,7 @@ fn acquisition_routes() -> Router<AppState> {
         )
 }
 
+#[allow(clippy::too_many_lines)]
 fn app_with_state(state: AppState) -> Router {
     let authentication = if state.database.is_some() {
         // Login is only reachable when a pool exists, so no handler has to cope with `None`.
@@ -3648,6 +3954,7 @@ fn app_with_state(state: AppState) -> Router {
             .merge(taxonomy_routes())
             .merge(location_routes())
             .merge(group_routes())
+            .merge(relation_routes())
             .merge(acquisition_routes())
             .route(
                 &format!("{API_PREFIX}/admin/spaces"),

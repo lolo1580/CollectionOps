@@ -92,7 +92,7 @@ La création, la recherche paginée par espace, la lecture et le transfert des o
 
 Chaque espace possède ses propres catégories, éventuellement imbriquées. Un objet peut être classé dans plusieurs catégories (20 au maximum). Les champs `text`, `number` et `date` sont définis sur une catégorie ; les sous-catégories héritent des champs de leurs ancêtres, et un champ commun à deux branches n'apparaît qu'une fois dans la fiche. Le classement peut être remplacé intégralement, y compris par une sélection vide. Les valeurs de champs encore accessibles sont conservées ; les autres restent sur les anciennes affectations historiques et ne figurent plus dans la fiche. Toutes les écritures sur l'objet exigent sa révision courante ; la corbeille reste en lecture seule.
 
-Lorsqu'un objet classé change d'espace, il faut choisir explicitement une ou plusieurs catégories de destination. Le classement et les valeurs de l'ancien espace restent en base pour l'historique mais ne sont pas affichés dans le nouvel espace ; aucune valeur n'est copiée implicitement. Un objet non classé peut toujours être transféré sans catégorie. Le client Windows permet de créer les catégories, de définir leurs champs, de classer un objet, d'enregistrer ses valeurs et de choisir le classement à destination.
+Lorsqu'un objet classé change d'espace, il faut choisir explicitement une ou plusieurs catégories de destination. Le classement et les valeurs de l'ancien espace restent en base pour l'historique mais ne sont pas affichés dans le nouvel espace ; aucune valeur n'est copiée implicitement. Un objet non classé peut toujours être transféré sans catégorie. Le client Windows permet de créer les catégories, de définir leurs champs, de classer un objet, d'enregistrer ses valeurs et de choisir le classement à destination. L'API permet en plus de renommer une catégorie ou un champ ; le parent, le type de valeur et les identifiants stables ne changent pas. La suppression d'une définition n'est pas exposée, car l'historique des valeurs et des classements la référence encore.
 
 ## Emplacements et filtre d'inventaire
 
@@ -101,6 +101,10 @@ Les emplacements physiques sont propres à chaque espace et peuvent être imbriq
 L'inventaire peut être filtré par catégorie ou emplacement, descendants compris, tout en conservant la recherche, le filtre d'état et la pagination. Le client Windows propose ces filtres dans l'écran Collection.
 
 Chaque fiche possède aussi une description (10 000 caractères maximum), une référence historique et une référence technique (500 caractères chacune). Les valeurs vides sont enregistrées comme absentes. Une série ou un regroupement est nommé dans son espace ; un objet peut appartenir à plusieurs de chaque type. Le client Windows permet de les créer, renommer, classer et filtrer. La suppression d'un ensemble exige qu'il soit vide et une confirmation dans le client. Les affectations sont retirées lors d'un transfert vers un autre espace, tandis que la description et les références suivent l'objet.
+
+## Relations entre objets
+
+Deux objets d'un même espace peuvent être reliés par un lien typé et dirigé : `related`, `variant_of` ou `part_of`. Un objet déclare ses liens sortants par `PUT /api/v1/items/{item_id}/relations` (remplacement d'ensemble, 50 au maximum) et la lecture expose aussi les liens entrants. Une cible d'un autre espace est refusée, un objet ne peut pas se lier à lui-même et un transfert vers un autre espace retire tous les liens qui mentionnent l'objet. Le client Windows n'expose pas encore ces liens.
 
 ## Préparation des acquisitions
 

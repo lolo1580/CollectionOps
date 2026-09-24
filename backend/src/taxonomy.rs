@@ -83,6 +83,7 @@ pub enum TaxonomyError {
     SpaceNotFound,
     ParentNotFound,
     CategoryNotFound,
+    FieldNotFound,
     DuplicateName,
     InvalidFieldType,
     ItemNotFound,
@@ -210,6 +211,56 @@ impl Database {
         decode_category(&row)
     }
 
+    /// Renames a category while keeping its stable identifier and its parent. The new name must
+    /// stay unique among its siblings, including the root level.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, missing-category, duplicate-name, or query error.
+    pub async fn rename_category(
+        &self,
+        space_id: Uuid,
+        category_id: Uuid,
+        name: &str,
+    ) -> Result<Category, TaxonomyError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_LABEL_CHARS {
+            return Err(TaxonomyError::InvalidName);
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT parent_key FROM inventory_categories \
+             WHERE id = ? AND space_id = ? FOR UPDATE",
+        )
+        .bind(category_id.to_string())
+        .bind(space_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(TaxonomyError::CategoryNotFound)?;
+        let parent_key: Vec<u8> = row.try_get("parent_key")?;
+        let duplicate: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM inventory_categories \
+             WHERE space_id = ? AND parent_key = ? AND name = ? AND id <> ?",
+        )
+        .bind(space_id.to_string())
+        .bind(&parent_key)
+        .bind(name)
+        .bind(category_id.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        if duplicate != 0 {
+            return Err(TaxonomyError::DuplicateName);
+        }
+        sqlx::query("UPDATE inventory_categories SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(category_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_duplicate)?;
+        tx.commit().await?;
+        self.category(space_id, category_id).await
+    }
+
     /// Creates a text, number or date field owned by a category.
     ///
     /// # Errors
@@ -285,6 +336,66 @@ impl Database {
         .await?
         .ok_or(TaxonomyError::MalformedData)?;
         decode_field(&row)
+    }
+
+    /// Renames a field definition. Its value type and stable identifier stay unchanged, so
+    /// values already recorded for the field remain attached to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, missing category/field, duplicate-name, or query error.
+    pub async fn rename_category_field(
+        &self,
+        space_id: Uuid,
+        category_id: Uuid,
+        field_id: Uuid,
+        name: &str,
+    ) -> Result<CategoryField, TaxonomyError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_LABEL_CHARS {
+            return Err(TaxonomyError::InvalidName);
+        }
+        let mut tx = self.pool().begin().await?;
+        let category: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT id FROM inventory_categories WHERE id = ? AND space_id = ? FOR UPDATE",
+        )
+        .bind(category_id.to_string())
+        .bind(space_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if category.is_none() {
+            return Err(TaxonomyError::CategoryNotFound);
+        }
+        let field: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT id FROM category_field_definitions WHERE id = ? AND category_id = ? FOR UPDATE",
+        )
+        .bind(field_id.to_string())
+        .bind(category_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if field.is_none() {
+            return Err(TaxonomyError::FieldNotFound);
+        }
+        let duplicate: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM category_field_definitions \
+             WHERE category_id = ? AND name = ? AND id <> ?",
+        )
+        .bind(category_id.to_string())
+        .bind(name)
+        .bind(field_id.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        if duplicate != 0 {
+            return Err(TaxonomyError::DuplicateName);
+        }
+        sqlx::query("UPDATE category_field_definitions SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(field_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_duplicate)?;
+        tx.commit().await?;
+        self.category_field(field_id).await
     }
 
     /// Adds one or more classifications to an item without discarding existing assignments.

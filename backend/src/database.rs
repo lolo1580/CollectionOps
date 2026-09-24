@@ -1003,6 +1003,8 @@ impl Database {
 
         crate::groups::clear_item_groups_on_transfer(&mut transaction, item_id).await?;
 
+        crate::relations::clear_item_relations_on_transfer(&mut transaction, item_id).await?;
+
         crate::locations::record_transfer_location_exit(
             &mut transaction,
             item_id,
@@ -1299,8 +1301,6 @@ impl Database {
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(filters.location_id.map(|id| id.to_string()))
-        .bind(filters.group_id.map(|id| id.to_string()))
-        .bind(filters.group_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(space_id.to_string())
         .bind(space_id.to_string())
@@ -1312,6 +1312,8 @@ impl Database {
         .bind(filters.category_id.map(|id| id.to_string()))
         .bind(space_id.to_string())
         .bind(filters.location_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
+        .bind(filters.group_id.map(|id| id.to_string()))
         .bind(limit)
         .fetch_all(&self.pool)
         .await
