@@ -64,6 +64,8 @@ Points d’entrée initiaux :
 
 Chaque réponse contient un identifiant `x-request-id`. Un identifiant UUID fourni par le client est propagé ; toute autre valeur est remplacée. Les routes inconnues renvoient un document d’erreur JSON normalisé.
 
+`/health/live` indique uniquement que le processus tourne. `/health/ready` vérifie MariaDB par une requête bornée à deux secondes lorsque la base est configurée : il renvoie `503` avec `status: not_ready` si elle ne répond plus. Sans base configurée, le mode limité aux métadonnées reste `ready`. Le bouton **Enregistrer et tester** du client Windows utilise cette vérification de disponibilité.
+
 Le socle d’autorisation représente séparément les permissions de collection, d’acquisition, de finance, de documents, de référentiel, de synchronisation et d’administration. Les routes de collection vérifient le jeton de session puis l'adhésion et les droits explicites dans chaque espace. `/api/v1/session` reste une route de test avec principal injecté ; les routes métier utilisent directement les sessions persistées.
 
 Les mots de passe utilisent Argon2id et les sessions des jetons opaques de 256 bits ; seule leur empreinte est conservée en base. Les routes de connexion, révocation et expiration sont implémentées.
@@ -110,6 +112,8 @@ Deux objets d'un même espace peuvent être reliés par un lien typé et dirigé
 
 Un espace peut tenir une liste d'envies, un répertoire de vendeurs et des offres rattachées à une envie et à un vendeur du même espace. Cette première tranche enregistre seulement les intitulés, notes et liens : **aucun prix, montant ou achat effectif**. Les liens doivent être HTTP(S) et ne peuvent pas contenir d'identifiants. La lecture exige `acquisitions_read`, la création `acquisitions_write` ; les droits de collection ou financiers ne sont pas implicites. Le propriétaire reçoit ces deux droits lors de la création de l'espace, et la migration les ajoute aux propriétaires des espaces existants. Le client Windows affiche les envies, vendeurs et offres selon les droits effectifs du membre.
 
+Les trois fiches peuvent aussi être modifiées depuis le client Windows. Le serveur exige la révision courante de chaque fiche et refuse une modification périmée avec `409` ; il ne supprime aucune de ces entrées dans cette tranche.
+
 ## Archivage et corbeille
 
 Un objet possède un état `active`, `archived` ou `trashed`. L'archivage et la mise à la corbeille sont réversibles, et aucune suppression physique n'est exposée en V1. Les routes `POST /api/v1/items/{item_id}/archive`, `POST /api/v1/items/{item_id}/trash` et `POST /api/v1/items/{item_id}/restore` exigent l'écriture dans l'espace courant et la révision lue par le client. Une transition non autorisée reçoit `422`, une révision obsolète `409` sans rien modifier. Chaque transition incrémente la révision et ajoute un événement d'audit avec l'auteur et l'état avant/après. Un objet en corbeille est en lecture seule jusqu'à sa restauration. L'identifiant stable, le numéro d'inventaire et l'historique des transferts survivent à toutes les transitions, et les numéros ne sont jamais réutilisés.
@@ -155,7 +159,7 @@ La fiche d'objet prend en charge le renommage par `PATCH /api/v1/items/{item_id}
 
 Prérequis : Windows, Visual Studio avec les outils de développement WinUI, .NET 10 et le SDK Windows correspondant.
 
-Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Dans **Collection**, créer ou choisir un espace, envoyer des invitations si l'on en est propriétaire, gérer les membres si l'on est propriétaire ou administrateur, transférer la propriété à un membre existant, rechercher et parcourir l'inventaire page par page, filtrer par état (actifs, archivés, corbeille, tous), ajouter des objets, puis en sélectionner un pour voir sa fiche, le renommer, l'archiver, le mettre à la corbeille ou le restaurer, le transférer, le relier à d'autres objets et voir son historique. Un administrateur qui n'est pas membre peut administrer les droits sans consulter l'inventaire. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur, l'option HTTP LAN et le thème restent uniquement en mémoire jusqu'à la fermeture du client. HTTPS est requis à distance ; HTTP est accepté pour la boucle locale, ou pour une adresse IPv4 privée seulement après activation explicite dans **Paramètres**. Cette exception de développement transmet les identifiants et jetons sans chiffrement sur le LAN ; elle ne doit pas servir en production. Le mode hors ligne n'est pas encore disponible.
+Ouvrir `client-windows/CollectionOps.Client/CollectionOps.Client.csproj` dans Visual Studio, sélectionner `x64` ou `ARM64`, puis lancer le projet. Dans **Paramètres**, saisir l'adresse du serveur et choisir le thème. Dans **Compte**, se connecter ou accepter une invitation. Le client sépare **Inventaire**, **Acquisitions**, **Organisation** et **Partage** dans la navigation. L'inventaire propose la recherche et la liste à gauche, la fiche à droite ; on peut créer un espace ou un objet, filtrer, modifier la fiche, renommer les catégories et les champs, relier l'objet à d'autres objets, archiver, restaurer, transférer et consulter l'historique selon les droits. Le **Partage** permet d'inviter, de gérer les membres et, pour le propriétaire actuel, de transférer la propriété à un membre existant. **Documents** et **Finances** sont seulement des aperçus d'interface, sans données ni écriture backend. Un administrateur qui n'est pas membre peut administrer les droits sans consulter l'inventaire. Le backend nécessite `COLLECTIONOPS_DATABASE_URL`. Le jeton, l'adresse du serveur, l'option HTTP LAN et le thème restent uniquement en mémoire jusqu'à la fermeture du client. HTTPS est requis à distance ; HTTP est accepté pour la boucle locale, ou pour une adresse IPv4 privée seulement après activation explicite dans **Paramètres**. Cette exception de développement transmet les identifiants et jetons sans chiffrement sur le LAN ; elle ne doit pas servir en production. Le mode hors ligne n'est pas encore disponible.
 
 Depuis PowerShell, dans la racine du dépôt :
 
@@ -176,6 +180,20 @@ Les consignes détaillées figurent dans [CONTRIBUTING.md](CONTRIBUTING.md).
 Le test de migration et de provisionnement peut être exécuté sur une base MariaDB de test dédiée avec `COLLECTIONOPS_TEST_DATABASE_URL=mysql://... cargo test -p collectionops-backend --test database`. Sans cette variable, ces tests sont ignorés.
 
 ## Configuration
+
+### Installation ou mise à jour du backend sur le LXC
+
+Le script [scripts/install-lxc.sh](scripts/install-lxc.sh) installe l'API depuis la branche `main` de GitHub sur un LXC Debian/Ubuntu avec systemd. Il exige `git`, `curl`, `cargo` et la chaîne de compilation Rust déjà installés, ainsi qu'un fichier `/etc/collectionops/dev.env` existant contenant au minimum `COLLECTIONOPS_DATABASE_URL=mysql://...` et `COLLECTIONOPS_BIND=0.0.0.0:8080`. Il **ne crée ni base, ni compte MariaDB, ni secret** et ne remplace pas ce fichier. Sur une installation neuve, créer le fichier avec les droits `600` avant de lancer le script.
+
+Après publication du script sur GitHub, l'exécuter sur le LXC en root :
+
+```bash
+curl -fsSLo /tmp/collectionops-install-lxc.sh https://raw.githubusercontent.com/lolo1580/CollectionOps/main/scripts/install-lxc.sh
+less /tmp/collectionops-install-lxc.sh
+bash /tmp/collectionops-install-lxc.sh
+```
+
+Le script demande de confirmer qu'une sauvegarde MariaDB a été vérifiée, car les migrations appliquées au démarrage ne sont pas réversibles automatiquement. Il compile la version publiée, conserve la configuration et le service existants, sauvegarde temporairement l'ancien exécutable et vérifie `/api/v1/health/ready`. Si la vérification échoue, il restaure l'ancien exécutable ; **cela ne restaure pas le schéma MariaDB**. Après l'installation, vérifier aussi depuis Windows `http://192.168.30.60:8080/api/v1/health/ready` avant d'utiliser le client. Ne pas employer cette adresse HTTP hors du réseau de développement.
 
 | Variable | Rôle | Défaut |
 |---|---|---|

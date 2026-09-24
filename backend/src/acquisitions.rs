@@ -13,6 +13,7 @@ pub struct Wish {
     pub space_id: Uuid,
     pub title: String,
     pub search_notes: Option<String>,
+    pub revision: u64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -22,6 +23,7 @@ pub struct Vendor {
     pub space_id: Uuid,
     pub name: String,
     pub website_url: Option<String>,
+    pub revision: u64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -34,6 +36,7 @@ pub struct Offer {
     pub title: String,
     pub source_url: Option<String>,
     pub notes: Option<String>,
+    pub revision: u64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -46,6 +49,8 @@ pub enum AcquisitionError {
     DuplicateVendor,
     WishNotFound,
     VendorNotFound,
+    OfferNotFound,
+    RevisionConflict,
     MalformedData,
 }
 
@@ -88,7 +93,7 @@ impl Database {
     ///
     /// Returns a storage or malformed-data error.
     pub async fn wishes_in_space(&self, space_id: Uuid) -> Result<Vec<Wish>, AcquisitionError> {
-        let rows = sqlx::query("SELECT id, space_id, title, search_notes, created_at FROM wishlist_entries WHERE space_id = ? ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, space_id, title, search_notes, revision, created_at FROM wishlist_entries WHERE space_id = ? ORDER BY created_at, id")
             .bind(space_id.to_string()).fetch_all(self.pool()).await?;
         rows.iter().map(decode_wish).collect()
     }
@@ -99,10 +104,41 @@ impl Database {
     ///
     /// Returns not-found, storage, or malformed-data errors.
     pub async fn wish(&self, space_id: Uuid, wish_id: Uuid) -> Result<Wish, AcquisitionError> {
-        let row = sqlx::query("SELECT id, space_id, title, search_notes, created_at FROM wishlist_entries WHERE space_id = ? AND id = ?")
+        let row = sqlx::query("SELECT id, space_id, title, search_notes, revision, created_at FROM wishlist_entries WHERE space_id = ? AND id = ?")
             .bind(space_id.to_string()).bind(wish_id.to_string())
             .fetch_optional(self.pool()).await?.ok_or(AcquisitionError::WishNotFound)?;
         decode_wish(&row)
+    }
+
+    /// Updates a wish only if its revision is still current.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, not-found, conflict, or storage errors.
+    pub async fn update_wish(
+        &self,
+        space_id: Uuid,
+        wish_id: Uuid,
+        title: &str,
+        search_notes: Option<&str>,
+        expected_revision: u64,
+    ) -> Result<Wish, AcquisitionError> {
+        let title = normalize_title(title)?;
+        let notes = normalize_notes(search_notes)?;
+        let mut tx = self.pool().begin().await?;
+        let changed = sqlx::query("UPDATE wishlist_entries SET title = ?, search_notes = ?, revision = revision + 1 WHERE space_id = ? AND id = ? AND revision = ?")
+            .bind(title).bind(notes).bind(space_id.to_string()).bind(wish_id.to_string())
+            .bind(expected_revision).execute(&mut *tx).await?.rows_affected();
+        if changed == 0 {
+            tx.rollback().await?;
+            self.wish(space_id, wish_id).await?;
+            return Err(AcquisitionError::RevisionConflict);
+        }
+        let row = sqlx::query("SELECT id, space_id, title, search_notes, revision, created_at FROM wishlist_entries WHERE space_id = ? AND id = ?")
+            .bind(space_id.to_string()).bind(wish_id.to_string()).fetch_one(&mut *tx).await?;
+        let wish = decode_wish(&row)?;
+        tx.commit().await?;
+        Ok(wish)
     }
 
     /// Creates a vendor scoped to one space.
@@ -144,7 +180,7 @@ impl Database {
     ///
     /// Returns a storage or malformed-data error.
     pub async fn vendors_in_space(&self, space_id: Uuid) -> Result<Vec<Vendor>, AcquisitionError> {
-        let rows = sqlx::query("SELECT id, space_id, name, website_url, created_at FROM acquisition_vendors WHERE space_id = ? ORDER BY name, id")
+        let rows = sqlx::query("SELECT id, space_id, name, website_url, revision, created_at FROM acquisition_vendors WHERE space_id = ? ORDER BY name, id")
             .bind(space_id.to_string()).fetch_all(self.pool()).await?;
         rows.iter().map(decode_vendor).collect()
     }
@@ -159,10 +195,41 @@ impl Database {
         space_id: Uuid,
         vendor_id: Uuid,
     ) -> Result<Vendor, AcquisitionError> {
-        let row = sqlx::query("SELECT id, space_id, name, website_url, created_at FROM acquisition_vendors WHERE space_id = ? AND id = ?")
+        let row = sqlx::query("SELECT id, space_id, name, website_url, revision, created_at FROM acquisition_vendors WHERE space_id = ? AND id = ?")
             .bind(space_id.to_string()).bind(vendor_id.to_string())
             .fetch_optional(self.pool()).await?.ok_or(AcquisitionError::VendorNotFound)?;
         decode_vendor(&row)
+    }
+
+    /// Updates a vendor only if its revision is still current.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, duplicate, not-found, conflict, or storage errors.
+    pub async fn update_vendor(
+        &self,
+        space_id: Uuid,
+        vendor_id: Uuid,
+        name: &str,
+        website_url: Option<&str>,
+        expected_revision: u64,
+    ) -> Result<Vendor, AcquisitionError> {
+        let name = normalize_title(name)?;
+        let website_url = normalize_url(website_url)?;
+        let mut tx = self.pool().begin().await?;
+        let changed = sqlx::query("UPDATE acquisition_vendors SET name = ?, website_url = ?, revision = revision + 1 WHERE space_id = ? AND id = ? AND revision = ?")
+            .bind(name).bind(website_url).bind(space_id.to_string()).bind(vendor_id.to_string())
+            .bind(expected_revision).execute(&mut *tx).await.map_err(map_duplicate_vendor)?.rows_affected();
+        if changed == 0 {
+            tx.rollback().await?;
+            self.vendor(space_id, vendor_id).await?;
+            return Err(AcquisitionError::RevisionConflict);
+        }
+        let row = sqlx::query("SELECT id, space_id, name, website_url, revision, created_at FROM acquisition_vendors WHERE space_id = ? AND id = ?")
+            .bind(space_id.to_string()).bind(vendor_id.to_string()).fetch_one(&mut *tx).await?;
+        let vendor = decode_vendor(&row)?;
+        tx.commit().await?;
+        Ok(vendor)
     }
 
     /// Records an offer for a wish and vendor in the same space, without a price.
@@ -203,7 +270,7 @@ impl Database {
         wish_id: Uuid,
     ) -> Result<Vec<Offer>, AcquisitionError> {
         self.wish(space_id, wish_id).await?;
-        let rows = sqlx::query("SELECT id, space_id, wish_id, vendor_id, title, source_url, notes, created_at FROM acquisition_offers WHERE space_id = ? AND wish_id = ? ORDER BY created_at, id")
+        let rows = sqlx::query("SELECT id, space_id, wish_id, vendor_id, title, source_url, notes, revision, created_at FROM acquisition_offers WHERE space_id = ? AND wish_id = ? ORDER BY created_at, id")
             .bind(space_id.to_string()).bind(wish_id.to_string()).fetch_all(self.pool()).await?;
         rows.iter().map(decode_offer).collect()
     }
@@ -219,10 +286,57 @@ impl Database {
         wish_id: Uuid,
         offer_id: Uuid,
     ) -> Result<Offer, AcquisitionError> {
-        let row = sqlx::query("SELECT id, space_id, wish_id, vendor_id, title, source_url, notes, created_at FROM acquisition_offers WHERE space_id = ? AND wish_id = ? AND id = ?")
+        let row = sqlx::query("SELECT id, space_id, wish_id, vendor_id, title, source_url, notes, revision, created_at FROM acquisition_offers WHERE space_id = ? AND wish_id = ? AND id = ?")
             .bind(space_id.to_string()).bind(wish_id.to_string()).bind(offer_id.to_string())
-            .fetch_optional(self.pool()).await?.ok_or(AcquisitionError::WishNotFound)?;
+            .fetch_optional(self.pool()).await?.ok_or(AcquisitionError::OfferNotFound)?;
         decode_offer(&row)
+    }
+
+    /// Updates an offer while keeping it attached to the same wish and space.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, missing vendor/offer, conflict, or storage errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_offer(
+        &self,
+        space_id: Uuid,
+        wish_id: Uuid,
+        offer_id: Uuid,
+        vendor_id: Uuid,
+        title: &str,
+        source_url: Option<&str>,
+        notes: Option<&str>,
+        expected_revision: u64,
+    ) -> Result<Offer, AcquisitionError> {
+        let title = normalize_title(title)?;
+        let source_url = normalize_url(source_url)?;
+        let notes = normalize_notes(notes)?;
+        self.vendor(space_id, vendor_id).await?;
+        let mut tx = self.pool().begin().await?;
+        let changed = sqlx::query("UPDATE acquisition_offers SET vendor_id = ?, title = ?, source_url = ?, notes = ?, revision = revision + 1 WHERE space_id = ? AND wish_id = ? AND id = ? AND revision = ?")
+            .bind(vendor_id.to_string()).bind(title).bind(source_url).bind(notes)
+            .bind(space_id.to_string()).bind(wish_id.to_string()).bind(offer_id.to_string())
+            .bind(expected_revision).execute(&mut *tx).await?.rows_affected();
+        if changed == 0 {
+            tx.rollback().await?;
+            self.offer(space_id, wish_id, offer_id).await?;
+            return Err(AcquisitionError::RevisionConflict);
+        }
+        let row = sqlx::query("SELECT id, space_id, wish_id, vendor_id, title, source_url, notes, revision, created_at FROM acquisition_offers WHERE space_id = ? AND wish_id = ? AND id = ?")
+            .bind(space_id.to_string()).bind(wish_id.to_string()).bind(offer_id.to_string())
+            .fetch_one(&mut *tx).await?;
+        let offer = decode_offer(&row)?;
+        tx.commit().await?;
+        Ok(offer)
+    }
+}
+
+fn map_duplicate_vendor(error: sqlx::Error) -> AcquisitionError {
+    if matches!(&error, sqlx::Error::Database(db) if db.is_unique_violation()) {
+        AcquisitionError::DuplicateVendor
+    } else {
+        AcquisitionError::Query(error)
     }
 }
 
@@ -267,6 +381,7 @@ fn decode_wish(row: &sqlx::mysql::MySqlRow) -> Result<Wish, AcquisitionError> {
         space_id: decode_uuid(row, "space_id")?,
         title: row.try_get("title")?,
         search_notes: row.try_get("search_notes")?,
+        revision: row.try_get("revision")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -277,6 +392,7 @@ fn decode_vendor(row: &sqlx::mysql::MySqlRow) -> Result<Vendor, AcquisitionError
         space_id: decode_uuid(row, "space_id")?,
         name: row.try_get("name")?,
         website_url: row.try_get("website_url")?,
+        revision: row.try_get("revision")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -290,6 +406,7 @@ fn decode_offer(row: &sqlx::mysql::MySqlRow) -> Result<Offer, AcquisitionError> 
         title: row.try_get("title")?,
         source_url: row.try_get("source_url")?,
         notes: row.try_get("notes")?,
+        revision: row.try_get("revision")?,
         created_at: row.try_get("created_at")?,
     })
 }

@@ -6,7 +6,12 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Corrigé
 
-- La recherche paginée d'inventaire liait le `group_id` à la place du `space_id` dans l'ordre des paramètres SQL, ce qui renvoyait une liste vide pour tout appel à `GET /spaces/{space_id}/items` ; l'ordre des `bind` suit maintenant les `?` de la requête.
+- Client Windows : l'inventaire ouvre automatiquement la première fiche, conserve la sélection lors de l'actualisation et demande confirmation avant d'ajouter un objet dont le nom existe déjà dans l'espace.
+- Backend : correction de l'ordre des paramètres SQL de la recherche d'inventaire ; un objet créé peut désormais apparaître dans la liste de son espace et les filtres retrouver leurs résultats.
+- Client Windows : le filtre d'état de la page Collection n'essaie plus de charger l'inventaire avant la fin de l'initialisation de l'écran après une connexion.
+- Client Windows : une collection vide affiche une aide de départ et masque la fiche tant qu'aucun objet n'est sélectionné ; l'accueil propose un accès direct à l'inventaire.
+- Client Windows : l'ajout d'un objet passe par une fenêtre dédiée ouverte depuis le bouton « Ajouter un objet » ; l'inventaire montre directement la liste et ouvre la nouvelle fiche après création.
+- La disponibilité `/health/ready` reflète désormais la connexion MariaDB après le démarrage (`503` en cas de panne), sans faire échouer la sonde de vie ; le client Windows teste cette disponibilité plutôt que la seule activité du processus.
 - La connexion renvoie l'identifiant et le nom du compte authentifié dans `principal`, au lieu d'un identifiant aléatoire et d'un nom vide.
 - Le client Windows efface son état de connexion après un refus `401` sur les sessions et affiche une erreur contrôlée pour une réponse JSON invalide ou un état de santé inattendu.
 - Quatre vérifications automatisées du client de session couvrent l'adresse serveur, l'état de santé, l'expiration de session et une réponse JSON invalide ; elles s'exécutent aussi dans la CI Windows.
@@ -16,13 +21,14 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 - Recherche d'inventaire étendue au nom, à la description et aux références historique et technique, les jokers restant littéraux ; test HTTP d'une correspondance dans la description et dans une référence.
 - Transfert de propriété d'un espace par `POST /api/v1/spaces/{space_id}/ownership`, réservé au propriétaire actuel et à un membre existant ; l'ancien propriétaire reste membre et le nouveau ne reçoit aucun droit implicite.
 - Table `space_ownership_events` et tests HTTP de l'autorisation, du refus d'un non-membre, du transfert vers soi-même et de l'audit.
-- Client Windows : transfert de la propriété depuis l'écran Collection, avec confirmation, et vérification de contrat portant le total à 32.
-- Client Windows : renommage d'une catégorie et d'un champ depuis l'écran Collection, et gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant).
-- Vérifications du client Windows pour le renommage des définitions et le contrat des relations, portant le total à 31.
 - Relations typées et dirigées entre objets d'un même espace (`related`, `variant_of`, `part_of`) : routes `GET` et `PUT /api/v1/items/{item_id}/relations`, remplacement d'ensemble limité à 50, contrôle de révision, refus d'un lien vers soi-même ou vers un autre espace, et suppression de tous les liens qui mentionnent un objet transféré.
 - Migration `item_relations` et tests HTTP/MariaDB de l'isolation entre espaces, des révisions, de la lecture entrante/sortante, de la corbeille et du nettoyage au transfert.
 - Renommage des catégories et des champs personnalisés par `PATCH`, sans changer le parent, le type de valeur ni les identifiants stables ; un nom déjà pris reçoit `409`, une définition d'un autre espace `404`, et les valeurs enregistrées restent attachées au même champ.
 - En-tête `Location` sur la création d'objet, pointant vers `/api/v1/items/{item_id}`.
+- Client Windows : renommage d'une catégorie et d'un champ, gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant) et transfert de la propriété avec confirmation ; les vérifications de contrat passent à 34.
+- Client Windows : première refonte de la vue Collection autour de l'inventaire, avec liste et fiche côte à côte ; organisation, partage et acquisitions sont repliés en outils secondaires.
+- Client Windows : navigation distincte pour Inventaire, Acquisitions, Organisation et Partage ; aperçu explicite des futurs modules Documents et Finances sans fausse persistance.
+- Modification des envies, vendeurs et offres sans montants, avec révisions optimistes, refus des éditions périmées, contrôle des droits et édition dans le client Windows.
 - Client Windows : option temporaire pour joindre directement une adresse IPv4 privée en HTTP pendant le développement, désactivée par défaut et limitée aux plages privées ; changement de serveur ou de mode invalidant la session locale.
 - Envies, vendeurs et offres repérées par espace, sans montants, avec droits d'acquisition explicites, API et écran Windows ; migration des droits des propriétaires existants et tests d'isolation.
 - Renommage des séries et regroupements avec contrôle de révision ; suppression des seuls ensembles vides, confirmée dans le client Windows.

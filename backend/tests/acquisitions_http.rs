@@ -186,6 +186,7 @@ async fn wishes_vendors_and_offers_require_explicit_acquisition_rights() {
     let wish = body_json(wish).await;
     assert_eq!(wish["title"], "Casque M1");
     assert_eq!(wish["search_notes"], "État correct");
+    assert_eq!(wish["revision"], "1");
     assert!(wish.get("price").is_none());
     let wish_id = wish["id"].as_str().unwrap();
     let vendor = send(
@@ -199,6 +200,7 @@ async fn wishes_vendors_and_offers_require_explicit_acquisition_rights() {
     assert_eq!(vendor.status(), StatusCode::CREATED);
     let vendor = body_json(vendor).await;
     let vendor_id = vendor["id"].as_str().unwrap();
+    assert_eq!(vendor["revision"], "1");
     assert_eq!(
         send(
             &router,
@@ -254,6 +256,7 @@ async fn wishes_vendors_and_offers_require_explicit_acquisition_rights() {
     let offer = body_json(offer).await;
     assert_eq!(offer["wish_id"], wish_id);
     assert_eq!(offer["vendor_id"], vendor_id);
+    assert_eq!(offer["revision"], "1");
     assert!(offer.get("amount").is_none());
     let listed = send(
         &router,
@@ -291,5 +294,186 @@ async fn wishes_vendors_and_offers_require_explicit_acquisition_rights() {
         .await
         .status(),
         StatusCode::NOT_FOUND
+    );
+
+    let wish_edit_path = format!("{wishes_path}/{wish_id}");
+    let updated_wish = send(&router, Method::PATCH, &wish_edit_path, Some(&writer_token),
+        Some(json!({"title":"Casque M1 restauré","search_notes":"Nouvelle recherche","expected_revision":"1"}))).await;
+    assert_eq!(updated_wish.status(), StatusCode::OK);
+    let updated_wish = body_json(updated_wish).await;
+    assert_eq!(updated_wish["revision"], "2");
+    assert_eq!(updated_wish["title"], "Casque M1 restauré");
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &wish_edit_path,
+            Some(&writer_token),
+            Some(json!({"title":"Écrasement","expected_revision":"1"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &wish_edit_path,
+            Some(&reader_token),
+            Some(json!({"title":"Interdit","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &wish_edit_path,
+            Some(&writer_token),
+            Some(json!({"title":"Invalide","expected_revision":"0"}))
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!("/api/v1/spaces/{}/wishes/{wish_id}", other.id),
+            Some(&owner_token),
+            Some(json!({"title":"Hors espace","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let vendor_edit_path = format!("{vendors_path}/{vendor_id}");
+    let updated_vendor = send(&router, Method::PATCH, &vendor_edit_path, Some(&writer_token),
+        Some(json!({"name":"Marchand A révisé","website_url":"https://example.org/nouveau","expected_revision":"1"}))).await;
+    assert_eq!(updated_vendor.status(), StatusCode::OK);
+    assert_eq!(body_json(updated_vendor).await["revision"], "2");
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &vendor_edit_path,
+            Some(&writer_token),
+            Some(json!({"name":"Ancien nom","expected_revision":"1"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &vendor_edit_path,
+            Some(&reader_token),
+            Some(json!({"name":"Interdit","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let another_vendor = db
+        .create_vendor(space.id, "Marchand C", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!("{vendors_path}/{}", another_vendor.id),
+            Some(&writer_token),
+            Some(json!({"name":"Marchand A révisé","expected_revision":"1"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        db.vendor(space.id, another_vendor.id)
+            .await
+            .unwrap()
+            .revision,
+        1
+    );
+
+    let offer_edit_path = format!("{offers_path}/{}", offer["id"].as_str().unwrap());
+    let updated_offer = send(
+        &router,
+        Method::PATCH,
+        &offer_edit_path,
+        Some(&writer_token),
+        Some(
+            json!({"vendor_id":vendor_id,"title":"Offre révisée","source_url":null,
+            "notes":"Vérifiée","expected_revision":"1"}),
+        ),
+    )
+    .await;
+    assert_eq!(updated_offer.status(), StatusCode::OK);
+    let updated_offer = body_json(updated_offer).await;
+    assert_eq!(updated_offer["revision"], "2");
+    assert_eq!(updated_offer["source_url"], Value::Null);
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &offer_edit_path,
+            Some(&writer_token),
+            Some(json!({"vendor_id":vendor_id,"title":"Périmée","expected_revision":"1"}))
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(send(&router, Method::PATCH, &offer_edit_path, Some(&writer_token),
+        Some(json!({"vendor_id":foreign_vendor.id,"title":"Autre espace","expected_revision":"2"})))
+        .await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &offer_edit_path,
+            Some(&reader_token),
+            Some(json!({"vendor_id":vendor_id,"title":"Interdit","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &format!(
+                "{wishes_path}/{}/offers/{}",
+                Uuid::now_v7(),
+                offer["id"].as_str().unwrap()
+            ),
+            Some(&writer_token),
+            Some(json!({"vendor_id":vendor_id,"title":"Autre envie","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(
+            &router,
+            Method::PATCH,
+            &offer_edit_path,
+            Some(&writer_token),
+            Some(json!({"vendor_id":vendor_id,"title":"Lien invalide","source_url":"file:///etc/passwd","expected_revision":"2"}))
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
     );
 }

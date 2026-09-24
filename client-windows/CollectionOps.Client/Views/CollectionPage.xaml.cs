@@ -1,11 +1,13 @@
 using CollectionOps.Client.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 
 namespace CollectionOps.Client.Views;
 
 public sealed partial class CollectionPage : Page
 {
+    private static Guid? _lastSpaceId;
     private SessionApi Api => App.Sessions;
     private CollectionSpace? ActiveSpace => Spaces.SelectedItem as CollectionSpace;
     private InventoryItem? ActiveItem => Items.SelectedItem as InventoryItem;
@@ -20,6 +22,9 @@ public sealed partial class CollectionPage : Page
     private bool _canReadAcquisitions;
     private bool _canWriteAcquisitions;
     private bool _loadingWishes;
+    private bool _loadingOffers;
+    private bool _viewInitialized;
+    private bool _changingFilters;
     private IReadOnlyList<AcquisitionVendor> _vendors = [];
     private bool _loadingCategories;
     private Guid? _categoryFilter;
@@ -37,6 +42,7 @@ public sealed partial class CollectionPage : Page
     public CollectionPage()
     {
         InitializeComponent();
+        _viewInitialized = true;
         UpdateButtons();
         if (Api.IsSignedIn)
         {
@@ -54,28 +60,47 @@ public sealed partial class CollectionPage : Page
 
     private async void OnStateFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!Api.IsSignedIn) return;
+        // The default ComboBoxItem is selected during InitializeComponent. Its event can
+        // run before the rest of the page's named controls have been created.
+        if (!_viewInitialized || _changingFilters || !Api.IsSignedIn) return;
         _stateFilter = (StateFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "active";
         await RefreshItemsAsync();
     }
 
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        var section = e.Parameter as string ?? "inventory";
+        InventorySection.Visibility = section == "inventory" ? Visibility.Visible : Visibility.Collapsed;
+        AcquisitionsSection.Visibility = section == "acquisitions" ? Visibility.Visible : Visibility.Collapsed;
+        OrganizationSection.Visibility = section == "organization" ? Visibility.Visible : Visibility.Collapsed;
+        SharingSection.Visibility = section == "sharing" ? Visibility.Visible : Visibility.Collapsed;
+        (SectionTitle.Text, SectionIntro.Text) = section switch
+        {
+            "acquisitions" => ("Acquisitions", "Suivez les objets recherchés, les vendeurs et leurs offres."),
+            "organization" => ("Organisation", "Définissez catégories, champs, emplacements et regroupements pour cet espace."),
+            "sharing" => ("Partage", "Gérez les invitations et les droits des membres de cet espace."),
+            _ => ("Inventaire", "Retrouvez vos objets et ouvrez leur fiche."),
+        };
+    }
+
     private async void OnCategoryFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingCategories || !Api.IsSignedIn) return;
+        if (_loadingCategories || _changingFilters || !Api.IsSignedIn) return;
         _categoryFilter = (CategoryFilter.SelectedItem as CategoryOption)?.Id;
         await RefreshItemsAsync();
     }
 
     private async void OnLocationFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingLocations || !Api.IsSignedIn) return;
+        if (_loadingLocations || _changingFilters || !Api.IsSignedIn) return;
         _locationFilter = (LocationFilter.SelectedItem as LocationOption)?.Id;
         await RefreshItemsAsync();
     }
 
     private async void OnGroupFilterChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingGroups || !Api.IsSignedIn) return;
+        if (_loadingGroups || _changingFilters || !Api.IsSignedIn) return;
         _groupFilter = (GroupFilter.SelectedItem as GroupOption)?.Id;
         await RefreshItemsAsync();
     }
@@ -95,14 +120,19 @@ public sealed partial class CollectionPage : Page
             if (ActiveSpace?.Id != space.Id || _search != search || _stateFilter != state ||
                 _categoryFilter != categoryId || _locationFilter != locationId || _groupFilter != groupId) return;
             var items = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
-            items.AddRange(page.Items);
+            var selectedId = ActiveItem?.Id;
+            var seenIds = items.Select(item => item.Id).ToHashSet();
+            items.AddRange(page.Items.Where(item => seenIds.Add(item.Id)));
             Items.ItemsSource = items;
+            Items.SelectedItem = items.FirstOrDefault(item => item.Id == selectedId);
+            if (Items.SelectedItem is not null) Items.ScrollIntoView(Items.SelectedItem);
             _nextCursor = page.NextCursor;
         });
     }
     private async void OnSpaceSelected(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSpaces) return;
+        _lastSpaceId = ActiveSpace?.Id;
         _categoryFilter = null;
         _locationFilter = null;
         _groupFilter = null;
@@ -123,6 +153,8 @@ public sealed partial class CollectionPage : Page
 
     private async void OnItemSelected(object sender, SelectionChangedEventArgs e)
     {
+        if (!_viewInitialized) return;
+        ObjectDetailsPanel.Visibility = ActiveItem is null ? Visibility.Collapsed : Visibility.Visible;
         SelectedItemName.Text = ActiveItem is { } item
             ? $"{item.Name} — n° {item.InventoryNumber} (révision {item.Revision}, {item.StateLabel})"
             : "Sélectionnez un objet dans l'inventaire.";
@@ -268,19 +300,88 @@ public sealed partial class CollectionPage : Page
 
     private async void OnCreateItem(object sender, RoutedEventArgs e)
     {
-        if (ActiveSpace is null || string.IsNullOrWhiteSpace(NewItemName.Text))
+        if (ActiveSpace is not { } space)
         {
-            ShowStatus("Choisissez un espace et saisissez un nom d'objet.", InfoBarSeverity.Warning);
+            ShowStatus("Choisissez d'abord un espace.", InfoBarSeverity.Warning);
             return;
         }
-        var spaceId = ActiveSpace.Id;
+        var nameBox = new TextBox { Header = "Nom de l'objet", MaxLength = 255, PlaceholderText = "Ex. : Maquette de char" };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Ajouter un objet à l'inventaire",
+            Content = nameBox,
+            PrimaryButtonText = "Ajouter",
+            CloseButtonText = "Annuler",
+            DefaultButton = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = false,
+        };
+        nameBox.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(nameBox.Text);
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        var name = nameBox.Text.Trim();
         await RunAsync(async () =>
         {
-            await Api.CreateItemAsync(spaceId, NewItemName.Text.Trim());
-            NewItemName.Text = string.Empty;
-            await RefreshItemsCoreAsync();
-            ShowStatus("Objet ajouté à l'inventaire.", InfoBarSeverity.Success);
+            if (ActiveSpace?.Id != space.Id) return;
+            var duplicate = await FindItemWithExactNameAsync(space.Id, name);
+            if (duplicate is not null)
+            {
+                var confirmation = new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "Un objet porte déjà ce nom",
+                    Content = $"{duplicate.Name} (n° {duplicate.InventoryNumber}, {duplicate.StateLabel}) existe déjà dans cet espace. Voulez-vous vraiment créer un autre objet nommé « {name} » ?",
+                    PrimaryButtonText = "Créer quand même",
+                    CloseButtonText = "Annuler",
+                    DefaultButton = ContentDialogButton.Close,
+                };
+                if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            }
+            if (ActiveSpace?.Id != space.Id) return;
+            var created = await Api.CreateItemAsync(space.Id, name);
+            _changingFilters = true;
+            try
+            {
+                _search = string.Empty;
+                SearchText.Text = string.Empty;
+                _stateFilter = "active";
+                StateFilter.SelectedIndex = 0;
+                _categoryFilter = null;
+                CategoryFilter.SelectedIndex = 0;
+                _locationFilter = null;
+                LocationFilter.SelectedIndex = 0;
+                _groupFilter = null;
+                GroupFilter.SelectedIndex = 0;
+            }
+            finally { _changingFilters = false; }
+            await RefreshItemsCoreAsync(created.Id, selectFirstWhenMissing: false);
+            var visibleItems = (Items.ItemsSource as IEnumerable<InventoryItem>)?.ToList() ?? [];
+            var selected = visibleItems.FirstOrDefault(candidate => candidate.Id == created.Id);
+            if (selected is null)
+            {
+                visibleItems.Insert(0, created);
+                Items.ItemsSource = visibleItems;
+                Items.Visibility = Visibility.Visible;
+                InventoryEmptyState.Visibility = Visibility.Collapsed;
+                selected = created;
+            }
+            Items.SelectedItem = selected;
+            Items.ScrollIntoView(selected);
+            ShowStatus("Objet ajouté ; sa fiche est ouverte.", InfoBarSeverity.Success);
         });
+    }
+
+    private async Task<InventoryItem?> FindItemWithExactNameAsync(Guid spaceId, string name)
+    {
+        string? cursor = null;
+        do
+        {
+            var page = await Api.GetItemsPageAsync(spaceId, name, cursor, limit: 100, state: "all");
+            var duplicate = page.Items.FirstOrDefault(item =>
+                string.Equals(item.Name.Trim(), name, StringComparison.OrdinalIgnoreCase));
+            if (duplicate is not null) return duplicate;
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+        return null;
     }
 
     private async void OnInvite(object sender, RoutedEventArgs e)
@@ -452,27 +553,33 @@ public sealed partial class CollectionPage : Page
         _canReadAcquisitions = permissions.Contains("acquisitions_read");
         _canWriteAcquisitions = permissions.Contains("acquisitions_write");
         AcquisitionsPanel.Visibility = _canReadAcquisitions ? Visibility.Visible : Visibility.Collapsed;
+        AcquisitionsNoAccess.Visibility = _canReadAcquisitions ? Visibility.Collapsed : Visibility.Visible;
         UpdateButtons();
     }
 
-    private async Task RefreshAcquisitionsCoreAsync()
+    private async Task RefreshAcquisitionsCoreAsync(Guid? selectWishId = null, Guid? selectVendorId = null)
     {
         if (ActiveSpace is not { } space || !_canReadAcquisitions)
         {
             Wishes.ItemsSource = null;
             Vendors.ItemsSource = null;
             OfferVendorChoices.ItemsSource = null;
+            EditOfferVendorChoices.ItemsSource = null;
             WishOffers.ItemsSource = null;
             _vendors = [];
             return;
         }
-        var previousWishId = (Wishes.SelectedItem as WishEntry)?.Id;
-        var previousVendorId = (OfferVendorChoices.SelectedItem as AcquisitionVendor)?.Id;
+        var previousWishId = selectWishId ?? (Wishes.SelectedItem as WishEntry)?.Id;
+        var previousVendorId = selectVendorId ?? (Vendors.SelectedItem as AcquisitionVendor)?.Id;
+        var previousOfferVendorId = (OfferVendorChoices.SelectedItem as AcquisitionVendor)?.Id;
         _vendors = await Api.GetVendorsAsync(space.Id);
         Vendors.ItemsSource = _vendors;
-        OfferVendorChoices.ItemsSource = _vendors;
-        OfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == previousVendorId)
+        Vendors.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == previousVendorId)
             ?? _vendors.FirstOrDefault();
+        OfferVendorChoices.ItemsSource = _vendors;
+        OfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == previousOfferVendorId)
+            ?? _vendors.FirstOrDefault();
+        EditOfferVendorChoices.ItemsSource = _vendors;
         var wishes = await Api.GetWishesAsync(space.Id);
         _loadingWishes = true;
         try
@@ -482,35 +589,85 @@ public sealed partial class CollectionPage : Page
                 ?? wishes.FirstOrDefault();
         }
         finally { _loadingWishes = false; }
+        PopulateWishEditor();
         await RefreshOffersCoreAsync();
         UpdateButtons();
     }
 
-    private async Task RefreshOffersCoreAsync()
+    private async Task RefreshOffersCoreAsync(Guid? selectOfferId = null)
     {
         if (ActiveSpace is not { } space || Wishes.SelectedItem is not WishEntry wish)
         {
             SelectedWishNotes.Text = "Choisissez une envie pour voir ses offres.";
             WishOffers.ItemsSource = null;
+            PopulateOfferEditor();
             return;
         }
+        var previousOfferId = selectOfferId ?? (WishOffers.SelectedItem as OfferLine)?.Offer.Id;
         SelectedWishNotes.Text = wish.SearchNotes ?? "Aucune note de recherche.";
         var offers = await Api.GetOffersAsync(space.Id, wish.Id);
         if (ActiveSpace?.Id != space.Id || (Wishes.SelectedItem as WishEntry)?.Id != wish.Id) return;
-        WishOffers.ItemsSource = offers.Select(offer => new OfferLine(
+        var lines = offers.Select(offer => new OfferLine(offer,
             $"{offer.Title} — {_vendors.FirstOrDefault(vendor => vendor.Id == offer.VendorId)?.Name ?? "Fournisseur inconnu"}" +
             (offer.SourceUrl is null ? string.Empty : $" · {offer.SourceUrl}") +
             (offer.Notes is null ? string.Empty : $" · {offer.Notes}"))).ToList();
+        _loadingOffers = true;
+        try
+        {
+            WishOffers.ItemsSource = lines;
+            WishOffers.SelectedItem = lines.FirstOrDefault(line => line.Offer.Id == previousOfferId)
+                ?? lines.FirstOrDefault();
+        }
+        finally { _loadingOffers = false; }
+        PopulateOfferEditor();
+        UpdateButtons();
+    }
+
+    private void PopulateWishEditor()
+    {
+        var wish = Wishes.SelectedItem as WishEntry;
+        EditWishTitle.Text = wish?.Title ?? string.Empty;
+        EditWishNotes.Text = wish?.SearchNotes ?? string.Empty;
+    }
+
+    private void PopulateVendorEditor()
+    {
+        var vendor = Vendors.SelectedItem as AcquisitionVendor;
+        EditVendorName.Text = vendor?.Name ?? string.Empty;
+        EditVendorWebsite.Text = vendor?.WebsiteUrl ?? string.Empty;
+        UpdateButtons();
+    }
+
+    private void PopulateOfferEditor()
+    {
+        var offer = (WishOffers.SelectedItem as OfferLine)?.Offer;
+        EditOfferTitle.Text = offer?.Title ?? string.Empty;
+        EditOfferUrl.Text = offer?.SourceUrl ?? string.Empty;
+        EditOfferNotes.Text = offer?.Notes ?? string.Empty;
+        EditOfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == offer?.VendorId);
+        UpdateButtons();
     }
 
     private async void OnWishSelected(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingWishes) return;
+        PopulateWishEditor();
+        WishOffers.ItemsSource = null;
         UpdateButtons();
-        await RunAsync(RefreshOffersCoreAsync);
+        await RunAsync(() => RefreshOffersCoreAsync());
+    }
+
+    private void OnVendorSelected(object sender, SelectionChangedEventArgs e) => PopulateVendorEditor();
+
+    private void OnOfferSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loadingOffers) PopulateOfferEditor();
     }
 
     private void OnOfferVendorSelected(object sender, SelectionChangedEventArgs e) => UpdateButtons();
+
+    private async void OnRefreshAcquisitions(object sender, RoutedEventArgs e) =>
+        await RunAsync(() => RefreshAcquisitionsCoreAsync());
 
     private async void OnCreateWish(object sender, RoutedEventArgs e)
     {
@@ -520,9 +677,7 @@ public sealed partial class CollectionPage : Page
             var created = await Api.CreateWishAsync(space.Id, NewWishTitle.Text.Trim(), NewWishNotes.Text.Trim());
             NewWishTitle.Text = string.Empty;
             NewWishNotes.Text = string.Empty;
-            await RefreshAcquisitionsCoreAsync();
-            Wishes.SelectedItem = (Wishes.ItemsSource as IReadOnlyList<WishEntry>)?
-                .FirstOrDefault(wish => wish.Id == created.Id);
+            await RefreshAcquisitionsCoreAsync(selectWishId: created.Id);
             ShowStatus("Envie ajoutée.", InfoBarSeverity.Success);
         });
     }
@@ -535,7 +690,7 @@ public sealed partial class CollectionPage : Page
             var created = await Api.CreateVendorAsync(space.Id, NewVendorName.Text.Trim(), NewVendorWebsite.Text.Trim());
             NewVendorName.Text = string.Empty;
             NewVendorWebsite.Text = string.Empty;
-            await RefreshAcquisitionsCoreAsync();
+            await RefreshAcquisitionsCoreAsync(selectVendorId: created.Id);
             OfferVendorChoices.SelectedItem = _vendors.FirstOrDefault(vendor => vendor.Id == created.Id);
             ShowStatus("Fournisseur ajouté.", InfoBarSeverity.Success);
         });
@@ -548,17 +703,59 @@ public sealed partial class CollectionPage : Page
             string.IsNullOrWhiteSpace(NewOfferTitle.Text)) return;
         await RunAsync(async () =>
         {
-            await Api.CreateOfferAsync(space.Id, wish.Id, vendor.Id, NewOfferTitle.Text.Trim(),
+            var created = await Api.CreateOfferAsync(space.Id, wish.Id, vendor.Id, NewOfferTitle.Text.Trim(),
                 NewOfferUrl.Text.Trim(), NewOfferNotes.Text.Trim());
             NewOfferTitle.Text = string.Empty;
             NewOfferUrl.Text = string.Empty;
             NewOfferNotes.Text = string.Empty;
-            await RefreshOffersCoreAsync();
+            await RefreshOffersCoreAsync(created.Id);
             ShowStatus("Offre ajoutée.", InfoBarSeverity.Success);
         });
     }
 
-    private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id));
+    private async void OnSaveWish(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Wishes.SelectedItem is not WishEntry wish ||
+            string.IsNullOrWhiteSpace(EditWishTitle.Text)) return;
+        await RunAsync(async () =>
+        {
+            await Api.UpdateWishAsync(space.Id, wish.Id, EditWishTitle.Text.Trim(),
+                EditWishNotes.Text.Trim(), wish.Revision);
+            await RefreshAcquisitionsCoreAsync(selectWishId: wish.Id);
+            ShowStatus("Envie modifiée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnSaveVendor(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Vendors.SelectedItem is not AcquisitionVendor vendor ||
+            string.IsNullOrWhiteSpace(EditVendorName.Text)) return;
+        await RunAsync(async () =>
+        {
+            await Api.UpdateVendorAsync(space.Id, vendor.Id, EditVendorName.Text.Trim(),
+                EditVendorWebsite.Text.Trim(), vendor.Revision);
+            await RefreshAcquisitionsCoreAsync(selectVendorId: vendor.Id);
+            ShowStatus("Fournisseur modifié.", InfoBarSeverity.Success);
+        });
+    }
+
+    private async void OnSaveOffer(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || Wishes.SelectedItem is not WishEntry wish ||
+            WishOffers.SelectedItem is not OfferLine line ||
+            EditOfferVendorChoices.SelectedItem is not AcquisitionVendor vendor ||
+            string.IsNullOrWhiteSpace(EditOfferTitle.Text)) return;
+        await RunAsync(async () =>
+        {
+            await Api.UpdateOfferAsync(space.Id, wish.Id, line.Offer.Id, vendor.Id,
+                EditOfferTitle.Text.Trim(), EditOfferUrl.Text.Trim(), EditOfferNotes.Text.Trim(),
+                line.Offer.Revision);
+            await RefreshOffersCoreAsync(line.Offer.Id);
+            ShowStatus("Offre modifiée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private Task RefreshSpacesAsync() => RunAsync(() => LoadSpacesAsync(ActiveSpace?.Id ?? _lastSpaceId));
 
     private async Task LoadSpacesAsync(Guid? selectedId)
     {
@@ -571,6 +768,7 @@ public sealed partial class CollectionPage : Page
             Spaces.SelectedItem = _spaces.FirstOrDefault(space => space.Id == selectedId) ?? _spaces.FirstOrDefault();
         }
         finally { _loadingSpaces = false; }
+        _lastSpaceId = ActiveSpace?.Id;
         if (previousSpaceId != ActiveSpace?.Id)
         {
             _categoryFilter = null;
@@ -587,6 +785,9 @@ public sealed partial class CollectionPage : Page
         if (_spaces.Count == 0)
         {
             Items.ItemsSource = null;
+            Items.Visibility = Visibility.Collapsed;
+            InventoryEmptyState.Text = "Créez un espace pour commencer votre collection.";
+            InventoryEmptyState.Visibility = Visibility.Visible;
             ShowStatus("Aucun espace visible. Créez votre premier espace.", InfoBarSeverity.Informational);
         }
         else await RefreshItemsCoreAsync();
@@ -595,20 +796,38 @@ public sealed partial class CollectionPage : Page
         UpdateButtons();
     }
 
-    private Task RefreshItemsAsync() => RunAsync(RefreshItemsCoreAsync);
+    private Task RefreshItemsAsync() => RunAsync(() => RefreshItemsCoreAsync());
 
-    private async Task RefreshItemsCoreAsync()
+    private async Task RefreshItemsCoreAsync(Guid? preferredItemId = null, bool selectFirstWhenMissing = true)
     {
+        var selectedId = preferredItemId ?? ActiveItem?.Id;
         _nextCursor = null;
         if (ActiveSpace is { } space && _canReadActiveSpace)
         {
             var page = await Api.GetItemsPageAsync(space.Id, _search, state: _stateFilter,
                 categoryId: _categoryFilter, locationId: _locationFilter, groupId: _groupFilter);
             Items.ItemsSource = page.Items;
+            Items.Visibility = page.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             _nextCursor = page.NextCursor;
+            InventoryEmptyState.Text = _search.Length > 0 || _categoryFilter is not null ||
+                _locationFilter is not null || _groupFilter is not null || _stateFilter != "active"
+                ? "Aucun objet ne correspond à ces filtres. Essayez de les modifier."
+                : "Aucun objet dans cet espace. Cliquez sur Ajouter un objet pour commencer.";
+            InventoryEmptyState.Visibility = page.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            Items.SelectedItem = page.Items.FirstOrDefault(item => item.Id == selectedId)
+                ?? (selectFirstWhenMissing ? page.Items.FirstOrDefault() : null);
+            if (Items.SelectedItem is not null) Items.ScrollIntoView(Items.SelectedItem);
         }
-        else Items.ItemsSource = null;
-        Items.SelectedItem = null;
+        else
+        {
+            Items.ItemsSource = null;
+            Items.Visibility = Visibility.Collapsed;
+            InventoryEmptyState.Text = ActiveSpace is null
+                ? "Choisissez ou créez un espace pour commencer."
+                : "Vous n'avez pas accès à l'inventaire de cet espace.";
+            InventoryEmptyState.Visibility = Visibility.Visible;
+            Items.SelectedItem = null;
+        }
         TransferHistory.ItemsSource = null;
         StateAuditHistory.ItemsSource = null;
     }
@@ -1202,6 +1421,8 @@ public sealed partial class CollectionPage : Page
 
     private void UpdateButtons()
     {
+        SharingNoAccess.Visibility = SharingPanel.Visibility == Visibility.Visible || MembersPanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed : Visibility.Visible;
         RefreshSpacesButton.IsEnabled = Api.IsSignedIn;
         CreateSpaceButton.IsEnabled = Api.IsSignedIn;
         CreateItemButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
@@ -1216,9 +1437,14 @@ public sealed partial class CollectionPage : Page
         SaveItemGroupsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
         CreateGroupButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
         CreateWishButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canWriteAcquisitions;
+        RefreshAcquisitionsButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadAcquisitions;
+        SaveWishButton.IsEnabled = CreateWishButton.IsEnabled && Wishes.SelectedItem is WishEntry;
         CreateVendorButton.IsEnabled = CreateWishButton.IsEnabled;
+        SaveVendorButton.IsEnabled = CreateVendorButton.IsEnabled && Vendors.SelectedItem is AcquisitionVendor;
         CreateOfferButton.IsEnabled = CreateWishButton.IsEnabled && Wishes.SelectedItem is WishEntry &&
             OfferVendorChoices.SelectedItem is AcquisitionVendor;
+        SaveOfferButton.IsEnabled = CreateWishButton.IsEnabled && WishOffers.SelectedItem is OfferLine &&
+            EditOfferVendorChoices.SelectedItem is AcquisitionVendor;
         RenameGroupButton.IsEnabled = CreateGroupButton.IsEnabled && ManageGroups.SelectedItem is CollectionGroup;
         DeleteGroupButton.IsEnabled = RenameGroupButton.IsEnabled;
         var activeItemState = ActiveItem?.State ?? "active";

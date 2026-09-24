@@ -18,6 +18,13 @@ public sealed partial class MainWindow : Window
     public void SetTheme(ElementTheme theme) => Navigation.RequestedTheme = theme;
     public ElementTheme CurrentTheme => Navigation.RequestedTheme;
 
+    public void OpenSection(string tag)
+    {
+        var item = Navigation.MenuItems.OfType<NavigationViewItem>()
+            .FirstOrDefault(candidate => candidate.Tag as string == tag);
+        if (item is not null) Navigation.SelectedItem = item;
+    }
+
     private void OnSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.IsSettingsSelected)
@@ -34,10 +41,11 @@ public sealed partial class MainWindow : Window
         ContentFrame.Navigate((item.Tag as string) switch
         {
             "dashboard" => typeof(DashboardPage),
-            "collection" => typeof(CollectionPage),
+            "inventory" or "acquisitions" or "organization" or "sharing" => typeof(CollectionPage),
+            "documents" or "finance" => typeof(FutureModulePage),
             "account" => typeof(AccountPage),
             _ => typeof(DashboardPage),
-        }, item.Content);
+        }, item.Tag);
     }
 }
 
