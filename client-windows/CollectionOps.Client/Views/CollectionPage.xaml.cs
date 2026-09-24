@@ -32,6 +32,7 @@ public sealed partial class CollectionPage : Page
     private IReadOnlyList<CollectionGroup> _groups = [];
     private int _assignedCategoryCount;
     private HashSet<Guid> _assignedCategoryIds = [];
+    private IReadOnlyList<ItemRelation> _relations = [];
 
     public CollectionPage()
     {
@@ -139,6 +140,9 @@ public sealed partial class CollectionPage : Page
         EffectiveFields.ItemsSource = null;
         CurrentLocationText.Text = "Aucun emplacement.";
         LocationHistory.ItemsSource = null;
+        ItemRelations.ItemsSource = null;
+        _relations = [];
+        RelationTargetChoices.ItemsSource = null;
         _assignedCategoryCount = 0;
         _assignedCategoryIds.Clear();
         StateAuditPanel.Visibility = ActiveItem is not null && CanReadStateAudit
@@ -149,6 +153,7 @@ public sealed partial class CollectionPage : Page
             await RefreshHistoryAsync();
             await RefreshItemTaxonomyAsync();
             await RefreshItemGroupsAsync();
+            await RefreshItemRelationsAsync();
             await RefreshItemLocationAsync();
             if (CanReadStateAudit) await RefreshStateAuditAsync();
         }
@@ -659,6 +664,7 @@ public sealed partial class CollectionPage : Page
 
     private async Task RefreshCategoriesCoreAsync()
     {
+        var previousManagedId = (ManageCategories.SelectedItem as CategoryOption)?.Id;
         _categories = ActiveSpace is { } space && _canReadActiveSpace
             ? await Api.GetCategoriesAsync(space.Id) : [];
         var options = CategoryOptions(_categories);
@@ -676,7 +682,11 @@ public sealed partial class CollectionPage : Page
         ParentCategories.SelectedIndex = 0;
         FieldCategory.ItemsSource = options;
         ItemCategoryChoices.ItemsSource = options;
+        ManageCategories.ItemsSource = options;
+        ManageCategories.SelectedItem = options.FirstOrDefault(option => option.Id == previousManagedId);
+        if (ManageCategories.SelectedItem is null) EditedCategoryName.Text = string.Empty;
         CategoryFields.ItemsSource = null;
+        UpdateButtons();
     }
 
     private async Task RefreshLocationsCoreAsync()
@@ -811,8 +821,70 @@ public sealed partial class CollectionPage : Page
 
     private async void OnFieldCategorySelected(object sender, SelectionChangedEventArgs e)
     {
-        if (ActiveSpace is not { } space || FieldCategory.SelectedItem is not CategoryOption { Id: { } id }) return;
+        EditedFieldName.Text = string.Empty;
+        if (ActiveSpace is not { } space || FieldCategory.SelectedItem is not CategoryOption { Id: { } id })
+        {
+            CategoryFields.ItemsSource = null;
+            UpdateButtons();
+            return;
+        }
         await RunAsync(async () => CategoryFields.ItemsSource = await Api.GetCategoryFieldsAsync(space.Id, id));
+    }
+
+    private void OnManageCategorySelected(object sender, SelectionChangedEventArgs e)
+    {
+        var option = ManageCategories.SelectedItem as CategoryOption;
+        EditedCategoryName.Text = option?.Id is { } id
+            ? _categories.FirstOrDefault(category => category.Id == id)?.Name ?? string.Empty
+            : string.Empty;
+        UpdateButtons();
+    }
+
+    private async void OnRenameCategory(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || ManageCategories.SelectedItem is not CategoryOption { Id: { } categoryId }) return;
+        var name = EditedCategoryName.Text.Trim();
+        if (name.Length == 0)
+        {
+            ShowStatus("Saisissez un nom de catégorie.", InfoBarSeverity.Warning);
+            return;
+        }
+        await RunAsync(async () =>
+        {
+            await Api.RenameCategoryAsync(space.Id, categoryId, name);
+            await RefreshCategoriesCoreAsync();
+            ManageCategories.SelectedItem = (ManageCategories.ItemsSource as IEnumerable<CategoryOption>)?
+                .FirstOrDefault(candidate => candidate.Id == categoryId);
+            if (ActiveItem is not null) await RefreshItemTaxonomyCoreAsync();
+            ShowStatus("Catégorie renommée.", InfoBarSeverity.Success);
+        });
+    }
+
+    private void OnCategoryFieldSelected(object sender, SelectionChangedEventArgs e)
+    {
+        EditedFieldName.Text = (CategoryFields.SelectedItem as CategoryFieldDefinition)?.Name ?? string.Empty;
+        UpdateButtons();
+    }
+
+    private async void OnRenameCategoryField(object sender, RoutedEventArgs e)
+    {
+        if (ActiveSpace is not { } space || FieldCategory.SelectedItem is not CategoryOption { Id: { } categoryId } ||
+            CategoryFields.SelectedItem is not CategoryFieldDefinition field) return;
+        var name = EditedFieldName.Text.Trim();
+        if (name.Length == 0)
+        {
+            ShowStatus("Saisissez un nom de champ.", InfoBarSeverity.Warning);
+            return;
+        }
+        await RunAsync(async () =>
+        {
+            await Api.RenameCategoryFieldAsync(space.Id, categoryId, field.Id, name);
+            var fields = await Api.GetCategoryFieldsAsync(space.Id, categoryId);
+            CategoryFields.ItemsSource = fields;
+            CategoryFields.SelectedItem = fields.FirstOrDefault(candidate => candidate.Id == field.Id);
+            if (ActiveItem is not null) await RefreshItemTaxonomyCoreAsync();
+            ShowStatus("Champ renommé.", InfoBarSeverity.Success);
+        });
     }
 
     private async void OnCreateField(object sender, RoutedEventArgs e)
@@ -877,6 +949,83 @@ public sealed partial class CollectionPage : Page
             ShowStatus("Séries et regroupements enregistrés.", InfoBarSeverity.Success);
         });
     }
+
+    private Task RefreshItemRelationsAsync() => RunAsync(RefreshItemRelationsCoreAsync);
+
+    private async Task RefreshItemRelationsCoreAsync()
+    {
+        if (ActiveItem is not { } item) return;
+        var relations = await Api.GetItemRelationsAsync(item.Id);
+        if (ActiveItem?.Id != item.Id) return;
+        _relations = relations.Relations;
+        ItemRelations.ItemsSource = relations.Relations;
+        await RefreshRelationTargetsCoreAsync(item);
+    }
+
+    private async Task RefreshRelationTargetsCoreAsync(InventoryItem item)
+    {
+        if (ActiveSpace is not { } space)
+        {
+            RelationTargetChoices.ItemsSource = null;
+            return;
+        }
+        var page = await Api.GetItemsPageAsync(space.Id, limit: 100, state: "all");
+        if (ActiveItem?.Id != item.Id) return;
+        RelationTargetChoices.ItemsSource = page.Items
+            .Where(candidate => candidate.Id != item.Id)
+            .Select(candidate => new RelationOption(candidate.Id, $"n° {candidate.InventoryNumber} · {candidate.Name}"))
+            .ToList();
+    }
+
+    private void OnRelationSelected(object sender, SelectionChangedEventArgs e) => UpdateButtons();
+
+    private async void OnRefreshRelations(object sender, RoutedEventArgs e) => await RefreshItemRelationsAsync();
+
+    private async void OnAddRelation(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item || RelationTargetChoices.SelectedItem is not RelationOption target) return;
+        var kind = (RelationKindChoices.SelectedItem as ComboBoxItem)?.Tag as string ?? "related";
+        var outgoing = OutgoingRelations();
+        if (outgoing.Any(entry => entry.TargetId == target.Id && entry.Kind == kind))
+        {
+            ShowStatus("Ce lien existe déjà.", InfoBarSeverity.Warning);
+            return;
+        }
+        outgoing.Add(new ItemRelationInput(target.Id, kind));
+        await ReplaceRelationsAsync(item, outgoing, "Lien ajouté.");
+    }
+
+    private async void OnRemoveRelation(object sender, RoutedEventArgs e)
+    {
+        if (ActiveItem is not { } item)
+        {
+            return;
+        }
+        if (ItemRelations.SelectedItem is not ItemRelation { Direction: "outgoing" } relation)
+        {
+            ShowStatus("Seul un lien sortant peut être retiré depuis cet objet.", InfoBarSeverity.Warning);
+            return;
+        }
+        var outgoing = OutgoingRelations()
+            .Where(entry => !(entry.TargetId == relation.RelatedItemId && entry.Kind == relation.Kind))
+            .ToList();
+        await ReplaceRelationsAsync(item, outgoing, "Lien retiré.");
+    }
+
+    private List<ItemRelationInput> OutgoingRelations() => _relations
+        .Where(relation => relation.Direction == "outgoing")
+        .Select(relation => new ItemRelationInput(relation.RelatedItemId, relation.Kind))
+        .ToList();
+
+    private Task ReplaceRelationsAsync(InventoryItem item, List<ItemRelationInput> relations, string success) =>
+        RunAsync(async () =>
+        {
+            await Api.ReplaceItemRelationsAsync(item.Id, relations, item.Revision);
+            await RefreshItemsCoreAsync();
+            Items.SelectedItem = (Items.ItemsSource as IReadOnlyList<InventoryItem>)?
+                .FirstOrDefault(candidate => candidate.Id == item.Id);
+            ShowStatus(success, InfoBarSeverity.Success);
+        });
 
     private async Task RefreshItemLocationCoreAsync()
     {
@@ -1006,6 +1155,11 @@ public sealed partial class CollectionPage : Page
         SaveFieldValueButton.IsEnabled = false;
         CreateLocationButton.IsEnabled = false;
         MoveItemLocationButton.IsEnabled = false;
+        RenameCategoryButton.IsEnabled = false;
+        RenameFieldButton.IsEnabled = false;
+        AddRelationButton.IsEnabled = false;
+        RemoveRelationButton.IsEnabled = false;
+        RefreshRelationsButton.IsEnabled = false;
         try { await action(); }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or ArgumentException or InvalidOperationException or System.Text.Json.JsonException or NotSupportedException)
         {
@@ -1053,6 +1207,13 @@ public sealed partial class CollectionPage : Page
         SaveFieldValueButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && EffectiveFields.SelectedItem is not null;
         CreateLocationButton.IsEnabled = Api.IsSignedIn && ActiveSpace is not null && _canReadActiveSpace;
         MoveItemLocationButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null && ItemLocationChoices.SelectedItem is LocationOption;
+        RenameCategoryButton.IsEnabled = CreateCategoryButton.IsEnabled && ManageCategories.SelectedItem is CategoryOption { Id: not null };
+        RenameFieldButton.IsEnabled = CreateFieldButton.IsEnabled && CategoryFields.SelectedItem is CategoryFieldDefinition;
+        var canEditRelations = Api.IsSignedIn && ActiveItem is not null && ActiveItem.State != "trashed";
+        RefreshRelationsButton.IsEnabled = Api.IsSignedIn && ActiveItem is not null;
+        AddRelationButton.IsEnabled = canEditRelations && RelationTargetChoices.SelectedItem is RelationOption;
+        RemoveRelationButton.IsEnabled = canEditRelations &&
+            ItemRelations.SelectedItem is ItemRelation { Direction: "outgoing" };
     }
 
     private void ShowStatus(string message, InfoBarSeverity severity)

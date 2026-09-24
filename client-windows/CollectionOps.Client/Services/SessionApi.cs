@@ -198,6 +198,14 @@ public sealed class SessionApi : IDisposable
         SendJsonAsync<CategoryFieldDefinition>(HttpMethod.Post,
             $"api/v1/spaces/{spaceId}/categories/{categoryId}/fields", new { name, value_type = valueType });
 
+    public Task<CollectionCategory> RenameCategoryAsync(Guid spaceId, Guid categoryId, string name) =>
+        SendJsonAsync<CollectionCategory>(HttpMethod.Patch,
+            $"api/v1/spaces/{spaceId}/categories/{categoryId}", new { name });
+
+    public Task<CategoryFieldDefinition> RenameCategoryFieldAsync(Guid spaceId, Guid categoryId, Guid fieldId, string name) =>
+        SendJsonAsync<CategoryFieldDefinition>(HttpMethod.Patch,
+            $"api/v1/spaces/{spaceId}/categories/{categoryId}/fields/{fieldId}", new { name });
+
     public async Task<IReadOnlyList<CollectionLocation>> GetLocationsAsync(Guid spaceId)
     {
         var result = await SendJsonAsync<LocationListResponse>(HttpMethod.Get,
@@ -240,6 +248,14 @@ public sealed class SessionApi : IDisposable
     public Task<ItemGroupListResponse> ReplaceItemGroupsAsync(Guid itemId, IReadOnlyList<Guid> groupIds, string expectedRevision) =>
         SendJsonAsync<ItemGroupListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/groups",
             new { group_ids = groupIds, expected_revision = expectedRevision });
+
+    public Task<ItemRelationListResponse> GetItemRelationsAsync(Guid itemId) =>
+        SendJsonAsync<ItemRelationListResponse>(HttpMethod.Get, $"api/v1/items/{itemId}/relations");
+
+    public Task<ItemRelationListResponse> ReplaceItemRelationsAsync(Guid itemId,
+        IReadOnlyList<ItemRelationInput> relations, string expectedRevision) =>
+        SendJsonAsync<ItemRelationListResponse>(HttpMethod.Put, $"api/v1/items/{itemId}/relations",
+            new { relations, expected_revision = expectedRevision });
 
     public async Task<IReadOnlyList<SpaceInvitation>> GetInvitationsAsync(Guid spaceId)
     {
@@ -616,6 +632,29 @@ public sealed record ItemGroupListResponse(
     [property: JsonPropertyName("revision")] string Revision,
     [property: JsonPropertyName("groups")] List<CollectionGroup> Groups);
 public sealed record GroupOption(Guid? Id, string Label);
+public sealed record ItemRelation(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("direction")] string Direction,
+    [property: JsonPropertyName("related_item_id")] Guid RelatedItemId,
+    [property: JsonPropertyName("related_item_name")] string RelatedItemName,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+{
+    public string KindLabel => Kind switch
+    {
+        "variant_of" => "Variante de",
+        "part_of" => "Fait partie de",
+        _ => "Lié",
+    };
+    public string DirectionLabel => Direction == "outgoing" ? "Sortant" : "Entrant";
+}
+public sealed record ItemRelationListResponse(
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("relations")] List<ItemRelation> Relations);
+public sealed record ItemRelationInput(
+    [property: JsonPropertyName("target_id")] Guid TargetId,
+    [property: JsonPropertyName("kind")] string Kind);
+public sealed record RelationOption(Guid Id, string Label);
 public sealed record LocationListResponse(
     [property: JsonPropertyName("locations")] List<CollectionLocation> Locations);
 public sealed record LocationOption(Guid? Id, string Label);

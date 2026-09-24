@@ -31,7 +31,9 @@ await AssignGroupsAndFilterInventory();
 await RenameAndDeleteEmptyGroup();
 await ReadAcquisitionPermissionsAndWishes();
 await CreateVendorAndOfferWithoutAmounts();
-Console.WriteLine("SessionApi: 29 checks passed.");
+await RenameCategoryAndFieldDefinitions();
+await ReadAndReplaceItemRelations();
+Console.WriteLine("SessionApi: 31 checks passed.");
 
 static Task RejectInsecureRemoteServer()
 {
@@ -514,6 +516,61 @@ static async Task CreateVendorAndOfferWithoutAmounts()
     Assert(handler.LastBody?.Contains("\"vendor_id\"") == true &&
         !handler.LastBody.Contains("price") && !handler.LastBody.Contains("amount"),
         "This first acquisition slice must not send financial amounts.");
+}
+
+static async Task RenameCategoryAndFieldDefinitions()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var spaceId = Guid.NewGuid();
+    var categoryId = Guid.NewGuid();
+    var fieldId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{categoryId}\",\"space_id\":\"{spaceId}\",\"parent_id\":null,\"name\":\"Casques lourds\"}}");
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"id\":\"{fieldId}\",\"category_id\":\"{categoryId}\",\"name\":\"Materiau\",\"value_type\":\"text\"}}");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var category = await api.RenameCategoryAsync(spaceId, categoryId, "Casques lourds");
+    Assert(category.Name == "Casques lourds" && handler.LastMethod == HttpMethod.Patch &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/categories/{categoryId}" &&
+        handler.LastBody?.Contains("\"name\":\"Casques lourds\"") == true,
+        "Category rename must PATCH the category with the new name.");
+    var field = await api.RenameCategoryFieldAsync(spaceId, categoryId, fieldId, "Materiau");
+    Assert(field.Name == "Materiau" && field.ValueType == "text" &&
+        handler.LastPath == $"/api/v1/spaces/{spaceId}/categories/{categoryId}/fields/{fieldId}" &&
+        handler.LastToken == "secret",
+        "Field rename must keep the value type and target the field inside its category.");
+}
+
+static async Task ReadAndReplaceItemRelations()
+{
+    var handler = new FakeHandler();
+    handler.Enqueue(HttpStatusCode.Created, """{"token":"secret","session":{"id":"session-1"}}""");
+    var itemId = Guid.NewGuid();
+    var variantId = Guid.NewGuid();
+    handler.Enqueue(HttpStatusCode.OK,
+        $"{{\"revision\":\"2\",\"relations\":[{{\"id\":\"{Guid.NewGuid()}\",\"kind\":\"variant_of\",\"direction\":\"outgoing\",\"related_item_id\":\"{variantId}\",\"related_item_name\":\"Casque M1\",\"created_at\":\"2026-09-24T10:00:00Z\"}}]}}");
+    handler.Enqueue(HttpStatusCode.OK, """{"revision":"3","relations":[]}""");
+    using var api = new SessionApi(handler);
+    api.Configure("http://127.0.0.1:8080");
+    await api.SignInAsync("owner@example.org", "password");
+    var relations = await api.GetItemRelationsAsync(itemId);
+    Assert(relations.Relations.Single().KindLabel == "Variante de" &&
+        relations.Relations.Single().DirectionLabel == "Sortant" &&
+        relations.Relations.Single().RelatedItemName == "Casque M1",
+        "Relations must parse with readable labels.");
+    Assert(handler.LastPath == $"/api/v1/items/{itemId}/relations" && handler.LastMethod == HttpMethod.Get,
+        "Reading relations must target the item.");
+    var replaced = await api.ReplaceItemRelationsAsync(itemId,
+        [new ItemRelationInput(variantId, "variant_of")], "2");
+    Assert(replaced.Revision == "3" && replaced.Relations.Count == 0 &&
+        handler.LastMethod == HttpMethod.Put &&
+        handler.LastBody?.Contains($"\"target_id\":\"{variantId}\"") == true &&
+        handler.LastBody.Contains("\"kind\":\"variant_of\"") &&
+        handler.LastBody.Contains("\"expected_revision\":\"2\"") && handler.LastToken == "secret",
+        "Replacing relations must send the typed target and the displayed revision.");
 }
 
 static void Assert(bool condition, string message)

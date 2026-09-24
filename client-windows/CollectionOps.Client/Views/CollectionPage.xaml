@@ -25,6 +25,12 @@
                 <ComboBox x:Name="ParentCategories" Header="Parent" Width="270" DisplayMemberPath="Label" />
                 <Button x:Name="CreateCategoryButton" Content="Créer" Click="OnCreateCategory" VerticalAlignment="Bottom" />
             </StackPanel>
+            <ComboBox x:Name="ManageCategories" Header="Catégorie à gérer" Width="400"
+                      DisplayMemberPath="Label" SelectionChanged="OnManageCategorySelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="EditedCategoryName" Header="Nouveau nom de la catégorie" Width="300" MaxLength="255" />
+                <Button x:Name="RenameCategoryButton" Content="Renommer la catégorie" Click="OnRenameCategory" VerticalAlignment="Bottom" />
+            </StackPanel>
             <ComboBox x:Name="FieldCategory" Header="Catégorie pour définir un champ" Width="400"
                       DisplayMemberPath="Label" SelectionChanged="OnFieldCategorySelected" />
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -36,7 +42,11 @@
                 </ComboBox>
                 <Button x:Name="CreateFieldButton" Content="Créer le champ" Click="OnCreateField" VerticalAlignment="Bottom" />
             </StackPanel>
-            <ListView x:Name="CategoryFields" SelectionMode="None" Height="100" DisplayMemberPath="Label" />
+            <ListView x:Name="CategoryFields" SelectionMode="Single" Height="100" DisplayMemberPath="Label" SelectionChanged="OnCategoryFieldSelected" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBox x:Name="EditedFieldName" Header="Nouveau nom du champ" Width="300" MaxLength="255" />
+                <Button x:Name="RenameFieldButton" Content="Renommer le champ" Click="OnRenameCategoryField" VerticalAlignment="Bottom" />
+            </StackPanel>
 
             <TextBlock Text="Emplacements physiques" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock Text="Organisez les pièces, meubles et étagères dans une hiérarchie propre à cet espace." TextWrapping="Wrap" />
@@ -220,6 +230,30 @@
             <ListView x:Name="ItemGroupChoices" SelectionMode="Multiple" Height="130" DisplayMemberPath="Label" />
             <Button x:Name="SaveItemGroupsButton" Content="Enregistrer les séries et regroupements"
                     Click="OnSaveItemGroups" HorizontalAlignment="Left" />
+            <TextBlock Text="Relations avec d'autres objets" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,12,0,0" />
+            <TextBlock Text="Un lien est déclaré par l'objet sélectionné vers un autre objet du même espace. Les liens entrants sont visibles mais se retirent depuis l'objet qui les déclare." TextWrapping="Wrap" />
+            <ListView x:Name="ItemRelations" SelectionMode="Single" Height="130" SelectionChanged="OnRelationSelected">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="services:ItemRelation">
+                        <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,6,0,6">
+                            <TextBlock Text="{x:Bind KindLabel}" Width="120" />
+                            <TextBlock Text="{x:Bind DirectionLabel}" Width="80" Opacity="0.8" />
+                            <TextBlock Text="{x:Bind RelatedItemName}" Width="380" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="RelationTargetChoices" Header="Objet lié" Width="300" DisplayMemberPath="Label" />
+                <ComboBox x:Name="RelationKindChoices" Header="Type" Width="160" SelectedIndex="0">
+                    <ComboBoxItem Content="Lié" Tag="related" />
+                    <ComboBoxItem Content="Variante de" Tag="variant_of" />
+                    <ComboBoxItem Content="Fait partie de" Tag="part_of" />
+                </ComboBox>
+                <Button x:Name="AddRelationButton" Content="Ajouter le lien" Click="OnAddRelation" VerticalAlignment="Bottom" />
+                <Button x:Name="RemoveRelationButton" Content="Retirer le lien sortant" Click="OnRemoveRelation" VerticalAlignment="Bottom" />
+                <Button x:Name="RefreshRelationsButton" Content="Actualiser" Click="OnRefreshRelations" VerticalAlignment="Bottom" />
+            </StackPanel>
             <ListView x:Name="EffectiveFields" Height="140" DisplayMemberPath="Label" SelectionChanged="OnEffectiveFieldSelected" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBox x:Name="FieldValue" Header="Valeur du champ sélectionné" Width="350" />

@@ -13,6 +13,8 @@ Ce fichier suit les principes de [Keep a Changelog](https://keepachangelog.com/f
 
 ### Ajouté
 
+- Client Windows : renommage d'une catégorie et d'un champ depuis l'écran Collection, et gestion des relations de l'objet sélectionné (liens entrants et sortants, ajout d'un lien typé, retrait d'un lien sortant).
+- Vérifications du client Windows pour le renommage des définitions et le contrat des relations, portant le total à 31.
 - Relations typées et dirigées entre objets d'un même espace (`related`, `variant_of`, `part_of`) : routes `GET` et `PUT /api/v1/items/{item_id}/relations`, remplacement d'ensemble limité à 50, contrôle de révision, refus d'un lien vers soi-même ou vers un autre espace, et suppression de tous les liens qui mentionnent un objet transféré.
 - Migration `item_relations` et tests HTTP/MariaDB de l'isolation entre espaces, des révisions, de la lecture entrante/sortante, de la corbeille et du nettoyage au transfert.
 - Renommage des catégories et des champs personnalisés par `PATCH`, sans changer le parent, le type de valeur ni les identifiants stables ; un nom déjà pris reçoit `409`, une définition d'un autre espace `404`, et les valeurs enregistrées restent attachées au même champ.
